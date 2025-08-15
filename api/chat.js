@@ -6,7 +6,7 @@ export default async function handler(req, res) {
 
   // CORS: allow only your Shopify domain
   const origin = req.headers.origin;
-  if (origin !== 'https://YOUR-STORE.myshopify.com') {
+  if (origin !== 'https://thephonographshop.myshopify.com') {
     return res.status(403).json({ error: 'Forbidden' });
   }
 
