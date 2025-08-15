@@ -1,51 +1,44 @@
 export default async function handler(req, res) {
-  // Only allow POST
-  if (req.method !== 'POST') {
-    return res.status(405).json({ error: 'Method not allowed' });
-  }
-
-  // Restrict CORS to your Shopify domain
-  const allowedOrigin = 'https://example.myshopify.com'; // change to your real domain
+  // Allow only your Shopify domain
+  const allowedOrigin = "https://example.myshopify.com"; // change this to your store's URL
   if (req.headers.origin !== allowedOrigin) {
-    return res.status(403).json({ error: 'Forbidden' });
+    return res.status(403).json({ error: "Forbidden" });
   }
 
-  res.setHeader('Access-Control-Allow-Origin', allowedOrigin);
-  res.setHeader('Access-Control-Allow-Methods', 'POST');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  // Allow CORS preflight
+  if (req.method === "OPTIONS") {
+    res.setHeader("Access-Control-Allow-Origin", allowedOrigin);
+    res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
+    res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+    return res.status(200).end();
+  }
+
+  // Only allow POST
+  if (req.method !== "POST") {
+    return res.status(405).json({ error: "Method not allowed" });
+  }
 
   try {
-    const apiKey = process.env.OPENAI_API_KEY;
-    if (!apiKey) {
-      throw new Error('Missing OPENAI_API_KEY env var');
-    }
-
     const { messages } = req.body;
-    if (!messages || !Array.isArray(messages)) {
-      return res.status(400).json({ error: 'Missing messages array' });
-    }
 
-    const r = await fetch('https://api.openai.com/v1/responses', {
-      method: 'POST',
+    const response = await fetch("https://api.openai.com/v1/chat/completions", {
+      method: "POST",
       headers: {
-        'Authorization': `Bearer ${apiKey}`,
-        'Content-Type': 'application/json'
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`
       },
       body: JSON.stringify({
-        model: 'gpt-4.1-mini',
-        input: messages,
-        stream: false
+        model: "gpt-4o-mini", // you can change model
+        messages,
+        stream: false // set to true if you want streaming
       })
     });
 
-    if (!r.ok) {
-      const errText = await r.text();
-      throw new Error(`OpenAI API error: ${errText}`);
-    }
-
-    const data = await r.json();
+    const data = await response.json();
+    res.setHeader("Access-Control-Allow-Origin", allowedOrigin);
     res.status(200).json(data);
 
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: err.mes
+    res.status(500).json({ error: err.message });
+  }
+}
