@@ -1,44 +1,43 @@
 export default async function handler(req, res) {
-  // Allow only your Shopify domain
-  const allowedOrigin = "https://example.myshopify.com"; // change this to your store's URL
-  if (req.headers.origin !== allowedOrigin) {
-    return res.status(403).json({ error: "Forbidden" });
+  // Allow only POST
+  if (req.method !== 'POST') {
+    return res.status(405).json({ error: 'Method Not Allowed' });
   }
 
-  // Allow CORS preflight
-  if (req.method === "OPTIONS") {
-    res.setHeader("Access-Control-Allow-Origin", allowedOrigin);
-    res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
-    res.setHeader("Access-Control-Allow-Headers", "Content-Type");
-    return res.status(200).end();
-  }
-
-  // Only allow POST
-  if (req.method !== "POST") {
-    return res.status(405).json({ error: "Method not allowed" });
+  // CORS: allow only your Shopify domain
+  const origin = req.headers.origin;
+  if (origin !== 'https://YOUR-STORE.myshopify.com') {
+    return res.status(403).json({ error: 'Forbidden' });
   }
 
   try {
     const { messages } = req.body;
+    if (!messages) {
+      return res.status(400).json({ error: 'Missing messages array' });
+    }
 
-    const response = await fetch("https://api.openai.com/v1/chat/completions", {
-      method: "POST",
+    const apiKey = process.env.OPENAI_API_KEY;
+    if (!apiKey) {
+      return res.status(500).json({ error: 'Server missing OpenAI key' });
+    }
+
+    const response = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
       headers: {
-        "Content-Type": "application/json",
-        "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`
+        'Authorization': `Bearer ${apiKey}`,
+        'Content-Type': 'application/json'
       },
       body: JSON.stringify({
-        model: "gpt-4o-mini", // you can change model
+        model: 'gpt-4o-mini',
         messages,
-        stream: false // set to true if you want streaming
+        stream: false
       })
     });
 
     const data = await response.json();
-    res.setHeader("Access-Control-Allow-Origin", allowedOrigin);
-    res.status(200).json(data);
-
+    return res.status(200).json(data);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    console.error(err);
+    return res.status(500).json({ error: 'Internal Server Error' });
   }
 }
