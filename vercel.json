@@ -1,8 +1,5 @@
 {
   "version": 2,
-  "functions": {
-    "api/chat.js": {
-      "runtime": "nodejs18.x"
-    }
-  }
+  "builds": [{ "src": "api/*.js", "use": "@vercel/node@3" }],
+  "routes": [{ "src": "/api/(.*)", "dest": "/api/$1" }]
 }
