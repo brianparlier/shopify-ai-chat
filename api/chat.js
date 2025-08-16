@@ -2,9 +2,6 @@
 import fs from 'fs';
 import path from 'path';
 
-const SUPPORT_EMAIL = process.env.SUPPORT_EMAIL || 'info@thephonographshop.com';
-const CONTACT_URL = process.env.CONTACT_URL || 'https://thephonographshop.com/pages/contact';
-
 const ALLOWED_ORIGINS = new Set([
   'https://thephonographshop.myshopify.com',
   'https://thephonographshop.com',
@@ -74,15 +71,14 @@ export default async function handler(req, res) {
   }
 
   // --- System prompt (notes Shopify env state for debugging) ---
-const system = [
-  'You are The Phonograph Shop assistant.',
-  'Answer concisely about this store’s products, policies, and common questions.',
-  'Prefer the FAQ content below when relevant.',
-  envStatus.SHOPIFY_STORE_DOMAIN && envStatus.SHOPIFY_STOREFRONT_TOKEN
-    ? ''
-    : 'Note: Shopify environment variables are not fully configured, so do not claim live order/status access.',
-  `If you’re not sure, say you’re not sure and direct the customer to ${SUPPORT_EMAIL} or ${CONTACT_URL}.`
-].join(' ');
+  const system = [
+    'You are The Phonograph Shop assistant.',
+    'Answer concisely about this store’s products, policies, and common questions.',
+    'Prefer the FAQ content below when relevant.',
+    envStatus.SHOPIFY_STORE_DOMAIN && envStatus.SHOPIFY_STOREFRONT_TOKEN
+      ? ''
+      : 'Note: Shopify environment variables are not fully configured, so do not claim live order/status access.',
+  ].join(' ');
 
   const ground = faq ? `\n\n### Store FAQ\n${faq}\n\n` : '\n\n';
 
@@ -111,19 +107,6 @@ const system = [
 
     const data = await resp.json();
     const text = data.choices?.[0]?.message?.content?.trim() || '(no reply)';
-
-    // Sanitize: replace any non-allowed emails with SUPPORT_EMAIL, and remove name drops
-    const allowedEmails = new Set([SUPPORT_EMAIL.toLowerCase()]);
-    text = text
-    .replace(
-      /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi,
-      (found) => (allowedEmails.has(found.toLowerCase()) ? found : SUPPORT_EMAIL)
-    )
-    .replace(/\b(Julie|Brian|Support Team|Customer Service)\b/gi, 'our support team');
-
-    return res.status(200).json({ ok: true, text, debug: envStatus });
-    
-    const data = await resp.json();
     return res.status(200).json({ ok: true, text, debug: envStatus });
   } catch (err) {
     console.error(err);
