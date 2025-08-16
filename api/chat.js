@@ -2,121 +2,132 @@
 import fs from 'fs';
 import path from 'path';
 
-const allowedOrigins = new Set([
-  'https://thephonographshop.com',
+const ALLOWED_ORIGINS = new Set([
   'https://thephonographshop.myshopify.com',
+  'https://thephonographshop.com',
 ]);
 
-async function fetchShopifyPages(handles = []) {
+const MODEL = 'gpt-4o-mini';
+const PAGES_CHAR_BUDGET = 4000;
+
+function stripHtml(html = '') {
+  return html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+}
+
+async function fetchShopifyPages() {
   const domain = process.env.SHOPIFY_STORE_DOMAIN;
-  const token = process.env.SHOPIFY_STOREFRONT_API_TOKEN;
-  if (!domain || !token || !handles.length) return '';
+  const token  = process.env.SHOPIFY_STOREFRONT_TOKEN;
 
-  // Build a single GraphQL query using aliases so we fetch pages in one round-trip
-  const aliasLines = handles.map((h, i) => {
-    const alias = `p${i}`;
-    return `${alias}: pageByHandle(handle: "${h}") { title body }`;
-  }).join('\n');
+  if (!domain || !token) {
+    // Make the reason visible so the client can show it.
+    return { text: '', error: 'Missing SHOPIFY env (SHOPIFY_STORE_DOMAIN or SHOPIFY_STOREFRONT_TOKEN)' };
+  }
 
-  const query = `query PagesByHandle {
-    ${aliasLines}
-  }`;
+  const url = `https://${domain}/api/2024-07/graphql.json`;
+  const query = `
+    query Pages {
+      pages(first: 50) {
+        edges { node { title body } }
+      }
+    }
+  `;
 
-  const resp = await fetch(`https://${domain}/api/2024-07/graphql.json`, {
+  const resp = await fetch(url, {
     method: 'POST',
     headers: {
       'X-Shopify-Storefront-Access-Token': token,
       'Content-Type': 'application/json',
-      'Accept': 'application/json',
     },
     body: JSON.stringify({ query }),
   });
 
   if (!resp.ok) {
-    const t = await resp.text().catch(() => '');
-    throw new Error(`Shopify Storefront API error: ${resp.status} ${t}`);
+    const txt = await resp.text().catch(() => '');
+    console.error('Shopify pages fetch failed:', resp.status, txt);
+    return { text: '', error: `Shopify pages fetch failed: ${resp.status}` };
   }
 
-  const data = await resp.json();
-  if (!data || !data.data) return '';
+  const data = await resp.json().catch(() => ({}));
+  const edges = data?.data?.pages?.edges || [];
 
-  // Concatenate page title + stripped body for each found page
-  const strip = (html = '') => html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
-  let corpus = '';
-  handles.forEach((h, i) => {
-    const alias = `p${i}`;
-    const page = data.data[alias];
-    if (page?.body || page?.title) {
-      corpus += `\n\n### ${page.title || h}\n${strip(page.body || '')}`;
-    }
-  });
-  return corpus.trim();
+  let combined = '';
+  for (const { node } of edges) {
+    const title = (node?.title || '').trim();
+    const body = stripHtml(node?.body || '');
+    const block = `\n\n### ${title}\n${body}`;
+    if ((combined + block).length > PAGES_CHAR_BUDGET) break;
+    combined += block;
+  }
+  return { text: combined, error: '' };
 }
 
 export default async function handler(req, res) {
   // CORS preflight
   if (req.method === 'OPTIONS') {
-    res.setHeader('Access-Control-Allow-Origin', Array.from(allowedOrigins).join(', '));
+    const origin = req.headers.origin || '';
+    if (ALLOWED_ORIGINS.has(origin)) {
+      res.setHeader('Access-Control-Allow-Origin', origin);
+    }
     res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
     return res.status(200).end();
   }
 
+  // Health check
   if (req.method !== 'POST') {
     return res.status(200).json({ ok: true, path: '/api/chat' });
   }
 
+  // Origin check
   const origin = req.headers.origin || '';
-  if (!allowedOrigins.has(origin)) {
-    return res.status(403).json({ error: 'Forbidden origin' });
+  if (!ALLOWED_ORIGINS.has(origin)) {
+    return res.status(403).json({ error: 'Forbidden origin', got: origin });
   }
   res.setHeader('Access-Control-Allow-Origin', origin);
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 
-  const { prompt } = req.body || {};
+  // Parse JSON body robustly (Vercel can give object or string)
+  let prompt = '';
+  try {
+    const raw = typeof req.body === 'string' ? JSON.parse(req.body) : (req.body || {});
+    prompt = raw.prompt;
+  } catch (e) {
+    return res.status(400).json({ error: 'Invalid JSON body' });
+  }
   if (!prompt || typeof prompt !== 'string') {
     return res.status(400).json({ error: 'Missing prompt' });
   }
+
+  // OpenAI key guard
   if (!process.env.OPENAI_API_KEY) {
     return res.status(500).json({ error: 'Missing OPENAI_API_KEY' });
   }
 
-  // Optional: also read any local /data/*.md you already have
-  let localDocs = '';
+  // Optional local FAQ
+  let faq = '';
   try {
-    const dataDir = path.join(process.cwd(), 'data');
-    const files = fs.readdirSync(dataDir).filter(f => f.endsWith('.md'));
-    localDocs = files.map(f => {
-      const p = path.join(dataDir, f);
-      return `\n\n### ${f}\n${fs.readFileSync(p, 'utf8')}`;
-    }).join('\n');
+    const faqPath = path.join(process.cwd(), 'data', 'faq.md');
+    faq = fs.readFileSync(faqPath, 'utf8');
   } catch (_) {}
 
-  // Live pull from Shopify Pages (edit handles as you add pages)
-  let shopifyDocs = '';
-  try {
-    shopifyDocs = await fetchShopifyPages([
-      'faq',
-      'shipping',
-      'returns',
-      'product-fit',   // create these pages in Online Store > Pages
-      'warranty',
-      'privacy-policy',
-      'terms-of-service',
-    ]);
-  } catch (e) {
-    console.error(e);
-  }
+  // Live Shopify Pages
+  const pagesResp = await fetchShopifyPages();
+  const pages = pagesResp.text || '';
+  const pagesError = pagesResp.error;
 
   const system = [
     'You are The Phonograph Shop assistant.',
-    'Answer concisely and only about store policies, shipping, returns, warranties, products, and fit advice.',
-    'Prefer the provided Store Docs; if unsure, say you are not certain and suggest contacting support.',
+    'Use the provided store content to answer questions about products, fitment, shipping, returns, and policies.',
+    'If the content does not include the answer, say you’re not sure and suggest contacting support.',
+    'Be brief, friendly, and helpful.',
   ].join(' ');
 
   const ground =
-    (shopifyDocs ? `\n\n## Store Docs (Shopify Pages)\n${shopifyDocs}` : '') +
-    (localDocs ? `\n\n## Store Docs (Local)\n${localDocs}` : '');
+    (faq ? `\n\n### FAQ\n${faq}\n` : '') +
+    (pages ? `\n\n### PAGES\n${pages}\n` : '');
+
+  // If Shopify content failed, still answer but include a gentle note for us to see in the client:
+  const debugNote = pagesError ? ` [debug: ${pagesError}]` : '';
 
   try {
     const resp = await fetch('https://api.openai.com/v1/chat/completions', {
@@ -126,12 +137,12 @@ export default async function handler(req, res) {
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        model: 'gpt-4o-mini',
-        temperature: 0.2,
+        model: MODEL,
         messages: [
           { role: 'system', content: system + ground },
-          { role: 'user', content: prompt }
+          { role: 'user', content: prompt },
         ],
+        temperature: 0.3,
       }),
     });
 
@@ -141,10 +152,10 @@ export default async function handler(req, res) {
     }
 
     const data = await resp.json();
-    const text = data.choices?.[0]?.message?.content?.trim() || '';
-    return res.status(200).json({ ok: true, text });
+    const text = (data.choices?.[0]?.message?.content?.trim() || 'Sorry—something went wrong.') + debugNote;
+    return res.status(200).json({ ok: true, text, hadShopifyError: !!pagesError });
   } catch (err) {
     console.error(err);
-    return res.status(500).json({ error: 'Server error' });
+    return res.status(500).json({ error: 'Server error', details: String(err) });
   }
 }
