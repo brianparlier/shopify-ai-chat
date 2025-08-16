@@ -1,161 +1,149 @@
-// api/chat.js
-import fs from 'fs';
-import path from 'path';
-
-const ALLOWED_ORIGINS = new Set([
-  'https://thephonographshop.myshopify.com',
-  'https://thephonographshop.com',
+// /api/chat.js
+const ALLOWED = new Set([
+  "https://thephonographshop.myshopify.com",
+  "https://thephonographshop.com"
 ]);
 
-const MODEL = 'gpt-4o-mini';
-const PAGES_CHAR_BUDGET = 4000;
+const SHOP = process.env.SHOPIFY_STORE_DOMAIN;            // e.g. thephonographshop.myshopify.com
+const TOKEN = process.env.SHOPIFY_STOREFRONT_API_TOKEN;    // Storefront API access token
+const OPENAI = process.env.OPENAI_API_KEY;
 
-function stripHtml(html = '') {
-  return html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+function cors(res, origin) {
+  if (ALLOWED.has(origin)) {
+    res.setHeader("Access-Control-Allow-Origin", origin);
+  }
+  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
 }
 
-async function fetchShopifyPages() {
-  const domain = process.env.SHOPIFY_STORE_DOMAIN;
-  const token  = process.env.SHOPIFY_STOREFRONT_TOKEN;
+function stripHtml(html = "") {
+  return html
+    .replace(/<script[\s\S]*?<\/script>/gi, "")
+    .replace(/<style[\s\S]*?<\/style>/gi, "")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
 
-  if (!domain || !token) {
-    // Make the reason visible so the client can show it.
-    return { text: '', error: 'Missing SHOPIFY env (SHOPIFY_STORE_DOMAIN or SHOPIFY_STOREFRONT_TOKEN)' };
-  }
+async function fetchPages() {
+  if (!SHOP || !TOKEN) return { pages: [], note: "Missing SHOPIFY env" };
 
-  const url = `https://${domain}/api/2024-07/graphql.json`;
+  const endpoint = `https://${SHOP}/api/2024-07/graphql.json`;
   const query = `
-    query Pages {
+    {
       pages(first: 50) {
-        edges { node { title body } }
+        nodes {
+          handle
+          title
+          body
+        }
       }
     }
   `;
 
-  const resp = await fetch(url, {
-    method: 'POST',
+  const r = await fetch(endpoint, {
+    method: "POST",
     headers: {
-      'X-Shopify-Storefront-Access-Token': token,
-      'Content-Type': 'application/json',
+      "Content-Type": "application/json",
+      "X-Shopify-Storefront-Access-Token": TOKEN
     },
-    body: JSON.stringify({ query }),
+    body: JSON.stringify({ query })
   });
 
-  if (!resp.ok) {
-    const txt = await resp.text().catch(() => '');
-    console.error('Shopify pages fetch failed:', resp.status, txt);
-    return { text: '', error: `Shopify pages fetch failed: ${resp.status}` };
+  if (!r.ok) {
+    const t = await r.text();
+    return { pages: [], note: `Storefront API error: ${t.slice(0,300)}` };
   }
 
-  const data = await resp.json().catch(() => ({}));
-  const edges = data?.data?.pages?.edges || [];
+  const data = await r.json();
+  const nodes = data?.data?.pages?.nodes || [];
+  const pages = nodes.map(n => ({
+    handle: n.handle,
+    title: n.title,
+    text: stripHtml(n.body || "")
+  }));
+  return { pages, note: `ok:${pages.length}` };
+}
 
-  let combined = '';
-  for (const { node } of edges) {
-    const title = (node?.title || '').trim();
-    const body = stripHtml(node?.body || '');
-    const block = `\n\n### ${title}\n${body}`;
-    if ((combined + block).length > PAGES_CHAR_BUDGET) break;
-    combined += block;
-  }
-  return { text: combined, error: '' };
+function selectRelevant(pages, prompt) {
+  const p = prompt.toLowerCase();
+  const keyHandles = ["shipping", "faq", "return", "policy", "contact"];
+  // 1) Prioritize by handle/title match
+  const scored = pages.map(pg => {
+    const hay = `${pg.handle} ${pg.title}`.toLowerCase();
+    let score = 0;
+    keyHandles.forEach((k, i) => { if (hay.includes(k)) score += (10 - i); });
+    if (pg.text.toLowerCase().includes("shipping")) score += 3;
+    if (pg.text.toLowerCase().includes("return")) score += 3;
+    if (pg.text.toLowerCase().includes("warranty")) score += 2;
+    if (pg.text.toLowerCase().includes("order")) score += 1;
+    if (p.split(/\s+/).some(w => hay.includes(w))) score += 1;
+    return { ...pg, score };
+  });
+
+  scored.sort((a,b)=>b.score-a.score);
+  // keep top few pages as context
+  return scored.slice(0, 4);
 }
 
 export default async function handler(req, res) {
-  // CORS preflight
-  if (req.method === 'OPTIONS') {
-    const origin = req.headers.origin || '';
-    if (ALLOWED_ORIGINS.has(origin)) {
-      res.setHeader('Access-Control-Allow-Origin', origin);
-    }
-    res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
-    return res.status(200).end();
-  }
+  const origin = req.headers.origin || "";
+  cors(res, origin);
 
-  // Health check
-  if (req.method !== 'POST') {
-    return res.status(200).json({ ok: true, path: '/api/chat' });
-  }
+  if (req.method === "OPTIONS") return res.status(200).end();
+  if (req.method !== "POST") return res.status(200).json({ ok: true, path: "/api/chat" });
 
-  // Origin check
-  const origin = req.headers.origin || '';
-  if (!ALLOWED_ORIGINS.has(origin)) {
-    return res.status(403).json({ error: 'Forbidden origin', got: origin });
-  }
-  res.setHeader('Access-Control-Allow-Origin', origin);
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  if (!ALLOWED.has(origin)) return res.status(403).json({ error: "Forbidden origin" });
+  if (!OPENAI) return res.status(500).json({ error: "Missing OPENAI_API_KEY" });
 
-  // Parse JSON body robustly (Vercel can give object or string)
-  let prompt = '';
-  try {
-    const raw = typeof req.body === 'string' ? JSON.parse(req.body) : (req.body || {});
-    prompt = raw.prompt;
-  } catch (e) {
-    return res.status(400).json({ error: 'Invalid JSON body' });
-  }
-  if (!prompt || typeof prompt !== 'string') {
-    return res.status(400).json({ error: 'Missing prompt' });
-  }
+  const { prompt } = req.body || {};
+  if (!prompt || typeof prompt !== "string") return res.status(400).json({ error: "Missing prompt" });
 
-  // OpenAI key guard
-  if (!process.env.OPENAI_API_KEY) {
-    return res.status(500).json({ error: 'Missing OPENAI_API_KEY' });
-  }
+  const { pages, note } = await fetchPages();
+  const relevant = selectRelevant(pages, prompt);
 
-  // Optional local FAQ
-  let faq = '';
-  try {
-    const faqPath = path.join(process.cwd(), 'data', 'faq.md');
-    faq = fs.readFileSync(faqPath, 'utf8');
-  } catch (_) {}
-
-  // Live Shopify Pages
-  const pagesResp = await fetchShopifyPages();
-  const pages = pagesResp.text || '';
-  const pagesError = pagesResp.error;
-
+  const context = relevant.map(pg => `# ${pg.title}\n${pg.text}`).join("\n\n---\n\n");
   const system = [
-    'You are The Phonograph Shop assistant.',
-    'Use the provided store content to answer questions about products, fitment, shipping, returns, and policies.',
-    'If the content does not include the answer, say you’re not sure and suggest contacting support.',
-    'Be brief, friendly, and helpful.',
-  ].join(' ');
+    "You are The Phonograph Shop assistant.",
+    "Use the provided store pages to answer questions about shipping, returns, policies, and general FAQs.",
+    "If the answer is not in the context, say you’re not sure and suggest contacting julie@thephonographshop.com.",
+    "Be concise and friendly."
+  ].join(" ");
 
-  const ground =
-    (faq ? `\n\n### FAQ\n${faq}\n` : '') +
-    (pages ? `\n\n### PAGES\n${pages}\n` : '');
-
-  // If Shopify content failed, still answer but include a gentle note for us to see in the client:
-  const debugNote = pagesError ? ` [debug: ${pagesError}]` : '';
+  const userMsg = [
+    "Customer question:",
+    prompt,
+    "",
+    "Store context (summaries of selected Shopify Pages):",
+    context || "(no context available)"
+  ].join("\n");
 
   try {
-    const resp = await fetch('https://api.openai.com/v1/chat/completions', {
-      method: 'POST',
+    const r = await fetch("https://api.openai.com/v1/chat/completions", {
+      method: "POST",
       headers: {
-        Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
-        'Content-Type': 'application/json',
+        Authorization: `Bearer ${OPENAI}`,
+        "Content-Type": "application/json"
       },
       body: JSON.stringify({
-        model: MODEL,
+        model: "gpt-4o-mini",
+        temperature: 0.2,
         messages: [
-          { role: 'system', content: system + ground },
-          { role: 'user', content: prompt },
-        ],
-        temperature: 0.3,
-      }),
+          { role: "system", content: system },
+          { role: "user", content: userMsg }
+        ]
+      })
     });
 
-    if (!resp.ok) {
-      const details = await resp.text();
-      return res.status(502).json({ error: 'Upstream OpenAI error', details });
+    if (!r.ok) {
+      const details = await r.text();
+      return res.status(502).json({ error: "Upstream OpenAI error", details, debug: note });
     }
 
-    const data = await resp.json();
-    const text = (data.choices?.[0]?.message?.content?.trim() || 'Sorry—something went wrong.') + debugNote;
-    return res.status(200).json({ ok: true, text, hadShopifyError: !!pagesError });
-  } catch (err) {
-    console.error(err);
-    return res.status(500).json({ error: 'Server error', details: String(err) });
+    const data = await r.json();
+    const text = data.choices?.[0]?.message?.content?.trim() || "";
+    return res.status(200).json({ ok: true, text, debug: note });
+  } catch (e) {
+    return res.status(500).json({ error: "Server error", debug: note });
   }
 }
