@@ -8,6 +8,11 @@ const ALLOWED_ORIGINS = new Set([
   'https://www.thephonographshop.com',
 ]);
 
+// ---- Contact policy ----
+// Completely block email output
+const BLOCK_EMAIL = true;
+
+
 export default async function handler(req, res) {
   // --- CORS (preflight) ---
   if (req.method === 'OPTIONS') {
@@ -71,15 +76,15 @@ export default async function handler(req, res) {
   }
 
   // --- System prompt (notes Shopify env state for debugging) ---
-  const system = [
+const system = [
   'You are The Phonograph Shop assistant.',
   'Answer concisely about this store’s products, policies, and common questions.',
   'Prefer the FAQ content below when relevant.',
   envStatus.SHOPIFY_STORE_DOMAIN && envStatus.SHOPIFY_STOREFRONT_TOKEN
     ? ''
     : 'Note: Shopify environment variables are not fully configured, so do not claim live order/status access.',
-  `Use ONLY these contacts when giving contact info: email = ${SUPPORT_EMAIL}; contact page = ${CONTACT_URL}.`,
-  'Never invent or mention any other email addresses or personal names. If asked for another email or a person, say: "Please email our support address above and mention your request."'
+  'Do NOT give any email addresses. Never mention “support@” or similar.',
+  'If someone asks for contact, politely say: “Please use the contact page on our website.”'
 ].join(' ');
 
   const ground = faq ? `\n\n### Store FAQ\n${faq}\n\n` : '\n\n';
@@ -113,6 +118,13 @@ export default async function handler(req, res) {
     const data = await resp.json();
 let text = data.choices?.[0]?.message?.content?.trim() || '(no reply)';
 
+    if (BLOCK_EMAIL) {
+  // Remove any email-like strings
+  text = text.replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, 'our contact page');
+  // Reword phrases like "email us" → "contact us"
+  text = text.replace(/\bemail(ed|ing)?\b/gi, 'contacted');
+}
+    
 // Sanitize: replace any non-allowed emails with SUPPORT_EMAIL, and remove name drops
 const allowedEmails = new Set([SUPPORT_EMAIL.toLowerCase()]);
 text = text
