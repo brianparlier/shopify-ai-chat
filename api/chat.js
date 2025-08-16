@@ -112,6 +112,17 @@ const system = [
     const data = await resp.json();
     const text = data.choices?.[0]?.message?.content?.trim() || '(no reply)';
 
+    // Sanitize: replace any non-allowed emails with SUPPORT_EMAIL, and remove name drops
+    const allowedEmails = new Set([SUPPORT_EMAIL.toLowerCase()]);
+    text = text
+    .replace(
+      /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi,
+      (found) => (allowedEmails.has(found.toLowerCase()) ? found : SUPPORT_EMAIL)
+    )
+    .replace(/\b(Julie|Brian|Support Team|Customer Service)\b/gi, 'our support team');
+
+    return res.status(200).json({ ok: true, text, debug: envStatus });
+    
     const data = await resp.json();
     return res.status(200).json({ ok: true, text, debug: envStatus });
   } catch (err) {
