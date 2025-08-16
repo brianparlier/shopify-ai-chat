@@ -24,9 +24,9 @@ function splitCSVRow(row) {
 
 function parseCSV(text) {
   // strip BOM if present
-  if (text.charCodeAt(0) === 0xFEFF) text = text.slice(1);
+  if (text && text.charCodeAt(0) === 0xFEFF) text = text.slice(1);
 
-  const lines = text.split(/\r?\n/).filter(l => l.trim().length);
+  const lines = (text || '').split(/\r?\n/).filter(l => l.trim().length);
   if (lines.length < 2) return [];
   const headers = splitCSVRow(lines[0]).map(h => h.trim().toLowerCase());
 
@@ -82,21 +82,28 @@ function readLocalCatalog() {
   return [];
 }
 
-// ---------- Lightweight relevance scoring ----------
-function scoreMatches(prompt, items, fields = ['title','body','tags']) {
+// ---------- Lightweight relevance scoring (title > tags > body) ----------
+function scoreMatches(prompt, items) {
   const q = normalizeText(prompt).toLowerCase();
   const terms = Array.from(new Set(q.split(/\W+/).filter(t => t.length > 2)));
   if (!terms.length) return [];
 
   return items.map(it => {
-    const hay = fields.map(f => (Array.isArray(it[f]) ? it[f].join(' ') : (it[f] || ''))).join(' ').toLowerCase();
+    const title = (it.title || '').toLowerCase();
+    const tags  = Array.isArray(it.tags) ? it.tags.join(' ').toLowerCase() : (it.tags || '').toLowerCase();
+    const body  = (it.body || '').toLowerCase();
+
     let score = 0;
-    for (const t of terms) if (hay.includes(t)) score++;
+    for (const t of terms) {
+      if (title.includes(t)) score += 5;   // strong weight
+      if (tags.includes(t))  score += 3;   // medium
+      if (body.includes(t))  score += 1;   // light
+    }
     return { item: it, score };
   })
   .filter(x => x.score > 0)
   .sort((a,b) => b.score - a.score)
-  .slice(0, 3)                      // cap to keep prompts small & reliable
+  .slice(0, 3) // cap to keep prompts small & reliable
   .map(x => x.item);
 }
 
@@ -164,18 +171,24 @@ export default async function handler(req, res) {
 
   // Catalog (CSV/JSON)
   let catalog = [];
-  try { catalog = readLocalCatalog(); } catch (e) {}
+  try { catalog = readLocalCatalog(); } catch (_) {}
+
+  // Score & pick top items (or none)
   const top = catalog.length ? scoreMatches(prompt, catalog) : [];
 
+  // Build small, safe context
   const catalogBlock = top.length
     ? `\n\n### Catalog (top matches)\n${formatCatalogSlice(top)}\n`
-    : '';
+    : `\n\n### Catalog\n(No direct matches found in this small slice; do not assert unavailability. Offer general guidance and suggest browsing products if relevant.)\n`;
+
   const faqBlock = faq ? `\n\n### Store FAQ\n${faq}\n` : '';
 
+  // Tighten behavior to avoid overclaiming
   const system = [
     'You are The Phonograph Shop assistant.',
     'Answer concisely and base answers on the provided Catalog/FAQ context when possible.',
-    'If the answer is not in the context, say you are not sure and suggest the site contact page.',
+    'Never claim an item is unavailable or that we do not carry it unless the context explicitly states so.',
+    'If the answer is not in the context, say you are not sure and suggest browsing or using the site contact page.',
     'When listing products, use exactly this format (max 3 items):',
     '- {Title} — {SKU} — {URL}',
     'Do not use markdown links; show plain URLs.',
@@ -206,12 +219,20 @@ export default async function handler(req, res) {
 
     if (!resp.ok) {
       const details = await resp.text();
-      return res.status(502).json({ error: 'Upstream OpenAI error', details, debug: { envStatus, hadCatalog: !!catalog.length, topItems: top.length } });
+      return res.status(502).json({
+        error: 'Upstream OpenAI error',
+        details,
+        debug: { envStatus, hadCatalog: !!catalog.length, topItems: top.length }
+      });
     }
 
     const data = await resp.json();
     const text = data.choices?.[0]?.message?.content?.trim() || '(no reply)';
-    return res.status(200).json({ ok: true, text, debug: { envStatus, hadCatalog: !!catalog.length, topItems: top.length } });
+    return res.status(200).json({
+      ok: true,
+      text,
+      debug: { envStatus, hadCatalog: !!catalog.length, topItems: top.length }
+    });
   } catch (err) {
     console.error('Server error:', err);
     return res.status(500).json({ error: 'Server error', message: String(err), debug: { envStatus } });
