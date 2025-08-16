@@ -124,6 +124,70 @@ async function searchShopify(prompt) {
   });
 }
 
+// --- CSV helpers -------------------------------------------------------------
+function splitCSVRow(row) {
+  // split by commas not inside quotes
+  return row.match(/(?:"[^"]*"|[^,])+/g)?.map(s => {
+    s = s.trim();
+    if (s.startsWith('"') && s.endsWith('"')) s = s.slice(1, -1).replace(/""/g, '"');
+    return s;
+  }) || [];
+}
+
+function parseCSV(text) {
+  const lines = text.split(/\r?\n/).filter(l => l.trim().length);
+  if (lines.length < 2) return [];
+  const headers = splitCSVRow(lines[0]).map(h => h.trim().toLowerCase());
+
+  const rows = [];
+  for (let i = 1; i < lines.length; i++) {
+    const cols = splitCSVRow(lines[i]);
+    if (!cols.length) continue;
+    const raw = {};
+    headers.forEach((h, idx) => raw[h] = cols[idx] ?? '');
+    // normalize common Shopify export field names → our schema
+    const get = (...keys) => keys.map(k => raw[k.toLowerCase()]).find(v => v && String(v).trim().length) || '';
+
+    const title  = get('title', 'product title', 'name');
+    const handle = get('handle');
+    const vendor = get('vendor', 'brand');
+    const tagsStr= get('tags', 'tag');
+    const body   = get('body', 'body_html', 'description', 'product description');
+    const sku    = get('sku', 'variant sku', 'variantsku');
+
+    if (!title) continue;
+    rows.push({
+      title,
+      handle,
+      vendor,
+      tags: tagsStr ? tagsStr.split(/\s*,\s*/).filter(Boolean) : [],
+      body,
+      sku
+    });
+  }
+  return rows;
+}
+
+// Try local JSON first; else fall back to CSV (data/products.csv)
+function readLocalCatalog() {
+  try {
+    const p = path.join(process.cwd(), 'data', 'catalog.json');
+    const raw = fs.readFileSync(p, 'utf8');
+    const arr = JSON.parse(raw);
+    if (Array.isArray(arr) && arr.length) return arr;
+  } catch (_) {}
+
+  try {
+    const p = path.join(process.cwd(), 'data', 'products.csv');
+    const raw = fs.readFileSync(p, 'utf8');
+    const arr = parseCSV(raw);
+    if (Array.isArray(arr) && arr.length) return arr;
+  } catch (_) {}
+
+  return [];
+}
+
+
 export default async function handler(req, res) {
   // --- CORS preflight ---
   if (req.method === 'OPTIONS') {
