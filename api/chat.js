@@ -2,14 +2,14 @@
 import fs from 'fs';
 import path from 'path';
 
-// ---- CORS ----
+// -------- CORS --------
 const ALLOWED_ORIGINS = new Set([
   'https://thephonographshop.myshopify.com',
   'https://thephonographshop.com',
   'https://www.thephonographshop.com',
 ]);
 
-// ---- Helpers ----
+// -------- Helpers --------
 const has = (v) => typeof v === 'string' && v.trim().length > 0;
 
 function normalizeText(s) {
@@ -18,38 +18,36 @@ function normalizeText(s) {
 
 function scoreMatches(prompt, items, fields = ['title', 'body', 'tags']) {
   const q = normalizeText(prompt).toLowerCase();
-  const terms = Array.from(new Set(q.split(/\W+/).filter((t) => t.length > 2)));
+  const terms = Array.from(new Set(q.split(/\W+/).filter(t => t.length > 2)));
   if (!terms.length) return [];
 
   return items
     .map((it) => {
-      const hay = fields.map((f) => (it[f] || '')).join(' ').toLowerCase();
+      const hay = fields.map(f => (it[f] || '')).join(' ').toLowerCase();
       let score = 0;
       for (const t of terms) if (hay.includes(t)) score++;
       return { item: it, score };
     })
-    .filter((x) => x.score > 0)
+    .filter(x => x.score > 0)
     .sort((a, b) => b.score - a.score)
     .slice(0, 10)
-    .map((x) => x.item);
+    .map(x => x.item);
 }
 
 function formatCatalogSlice(items) {
-  return items
-    .map((it) => {
-      const lines = [];
-      lines.push(`- Title: ${normalizeText(it.title)}`);
-      if (it.sku) lines.push(`  SKU: ${normalizeText(it.sku)}`);
-      if (it.handle) lines.push(`  URL: https://thephonographshop.com/products/${it.handle}`);
-      if (has(it.vendor)) lines.push(`  Brand: ${it.vendor}`);
-      if (has(it.tags)) lines.push(`  Tags: ${Array.isArray(it.tags) ? it.tags.join(', ') : it.tags}`);
-      if (has(it.body)) lines.push(`  Notes: ${normalizeText(it.body).slice(0, 300)}…`);
-      return lines.join('\n');
-    })
-    .join('\n');
+  return items.map(it => {
+    const lines = [];
+    lines.push(`- Title: ${normalizeText(it.title)}`);
+    if (it.sku) lines.push(`  SKU: ${normalizeText(it.sku)}`);
+    if (it.handle) lines.push(`  URL: https://thephonographshop.com/products/${it.handle}`);
+    if (has(it.vendor)) lines.push(`  Brand: ${it.vendor}`);
+    if (has(it.tags)) lines.push(`  Tags: ${Array.isArray(it.tags) ? it.tags.join(', ') : it.tags}`);
+    if (has(it.body)) lines.push(`  Notes: ${normalizeText(it.body).slice(0, 300)}…`);
+    return lines.join('\n');
+  }).join('\n');
 }
 
-// Try to read a committed catalog file (fast, no API)
+// -------- Local catalog (optional) --------
 function readLocalCatalog() {
   try {
     const p = path.join(process.cwd(), 'data', 'catalog.json');
@@ -60,130 +58,87 @@ function readLocalCatalog() {
   return [];
 }
 
-// Live fallback: Shopify Storefront search (no product secrets needed)
-// Live fallback: Shopify Storefront search (no product secrets needed)
+// -------- Shopify search (hardened) --------
 async function searchShopify(prompt) {
   const domain = process.env.SHOPIFY_STORE_DOMAIN;
   const token  = process.env.SHOPIFY_STOREFRONT_TOKEN;
   if (!domain || !token) return [];
 
-  // 1) Normalize user text → compact keyword query
-  const raw = normalizeText(prompt).toLowerCase();
-  const terms = Array.from(new Set(raw.split(/\W+/).filter(t => t.length > 2)));
+  try {
+    // compact, product-like query (works better with Shopify search)
+    const raw = normalizeText(prompt).toLowerCase();
+    const terms = Array.from(new Set(raw.split(/\W+/).filter(t => t.length > 2)));
+    const compact = terms.join(' ').slice(0, 100);
+    const biased  = compact.includes('spring')
+      ? compact.replace(/\b(main\s*spring|spring)\b/gi, 'mainspring')
+      : compact;
 
-  // prefer concise product-ish query (works MUCH better with Shopify search)
-  // e.g. "edison standard main spring"
-  const compact = terms.join(' ').slice(0, 100);
-
-  // also try a slightly biased variant that repeats “mainspring” if relevant
-  const biased = compact.includes('spring')
-    ? compact.replace(/\b(main\s*spring|spring)\b/gi, 'mainspring')
-    : compact;
-
-  const gql = `
-    query SearchProducts($q: String!) {
-      products(first: 10, query: $q) {
-        edges {
-          node {
-            id
-            title
-            handle
-            vendor
-            tags
-            variants(first: 1) { edges { node { sku } } }
-            description
+    const gql = `
+      query SearchProducts($q: String!) {
+        products(first: 10, query: $q) {
+          edges {
+            node {
+              id
+              title
+              handle
+              vendor
+              tags
+              variants(first: 1) { edges { node { sku } } }
+              description
+            }
           }
         }
       }
-    }
-  `;
+    `;
 
-  async function run(q) {
-    const resp = await fetch(`https://${domain}/api/2024-07/graphql.json`, {
-      method: 'POST',
-      headers: {
-        'X-Shopify-Storefront-Access-Token': token,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({ query: gql, variables: { q } }),
-    });
-    if (!resp.ok) return [];
-    const data = await resp.json();
-    const edges = data?.data?.products?.edges || [];
-    return edges.map(e => {
-      const n = e.node || {};
-      const sku = n.variants?.edges?.[0]?.node?.sku || '';
-      return {
-        title: n.title,
-        handle: n.handle,
-        vendor: n.vendor,
-        tags: n.tags,
-        body: n.description,
-        sku,
-      };
-    });
-  }
-
-  // Try compact first, then biased; merge uniques
-  const a = await run(compact);
-  const b = biased !== compact ? await run(biased) : [];
-  const seen = new Set();
-  const merged = [];
-  for (const it of [...a, ...b]) {
-    const key = `${it.handle}|${it.sku}|${it.title}`;
-    if (!seen.has(key)) { seen.add(key); merged.push(it); }
-  }
-  return merged;
-}
-
-  const queryText = normalizeText(prompt).slice(0, 100);
-  const gql = `
-    query SearchProducts($q: String!) {
-      products(first: 10, query: $q) {
-        edges {
-          node {
-            id
-            title
-            handle
-            vendor
-            tags
-            variants(first: 1) { edges { node { sku } } }
-            description
-          }
-        }
+    async function run(q) {
+      const resp = await fetch(`https://${domain}/api/2024-07/graphql.json`, {
+        method: 'POST',
+        headers: {
+          'X-Shopify-Storefront-Access-Token': token,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ query: gql, variables: { q } }),
+      });
+      if (!resp.ok) {
+        const t = await resp.text().catch(()=>'');
+        console.error('Shopify query failed', resp.status, t);
+        return [];
       }
+      const data = await resp.json();
+      const edges = data?.data?.products?.edges || [];
+      return edges.map(e => {
+        const n = e.node || {};
+        const sku = n.variants?.edges?.[0]?.node?.sku || '';
+        return {
+          title: n.title,
+          handle: n.handle,
+          vendor: n.vendor,
+          tags: n.tags,
+          body: n.description,
+          sku,
+        };
+      });
     }
-  `;
 
-  const resp = await fetch(`https://${domain}/api/2024-07/graphql.json`, {
-    method: 'POST',
-    headers: {
-      'X-Shopify-Storefront-Access-Token': token,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({ query: gql, variables: { q: queryText } }),
-  });
-
-  if (!resp.ok) return [];
-
-  const data = await resp.json();
-  const edges = data?.data?.products?.edges || [];
-  return edges.map((e) => {
-    const n = e.node || {};
-    const sku = n.variants?.edges?.[0]?.node?.sku || '';
-    return {
-      title: n.title,
-      handle: n.handle,
-      vendor: n.vendor,
-      tags: n.tags,
-      body: n.description,
-      sku,
-    };
-  });
+    const a = await run(compact);
+    const b = biased !== compact ? await run(biased) : [];
+    const seen = new Set();
+    const merged = [];
+    for (const it of [...a, ...b]) {
+      const key = `${it.handle}|${it.sku}|${it.title}`;
+      if (!seen.has(key)) { seen.add(key); merged.push(it); }
+    }
+    return merged;
+  } catch (err) {
+    console.error('searchShopify error', err);
+    return [];
+  }
 }
 
+// -------- Handler --------
 export default async function handler(req, res) {
-  // --- CORS preflight ---
+  // CORS preflight
   if (req.method === 'OPTIONS') {
     const origin = req.headers.origin || '';
     if (ALLOWED_ORIGINS.has(origin)) {
@@ -195,12 +150,12 @@ export default async function handler(req, res) {
     return res.status(200).end();
   }
 
-  // --- Health ---
+  // Health
   if (req.method !== 'POST') {
     return res.status(200).json({ ok: true, path: '/api/chat' });
   }
 
-  // --- CORS runtime ---
+  // CORS runtime
   const origin = req.headers.origin || '';
   if (!ALLOWED_ORIGINS.has(origin)) {
     return res.status(403).json({ error: 'Forbidden origin' });
@@ -209,44 +164,32 @@ export default async function handler(req, res) {
   res.setHeader('Vary', 'Origin');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 
-  // --- Input ---
+  // Input
   const { prompt } = req.body || {};
   if (!has(prompt)) {
     return res.status(400).json({ error: 'Missing prompt' });
   }
 
-  // --- Env checks ---
-  const envStatus = {
-    OPENAI_API_KEY: !!process.env.OPENAI_API_KEY,
-    SHOPIFY_STORE_DOMAIN: !!process.env.SHOPIFY_STORE_DOMAIN,
-    SHOPIFY_STOREFRONT_TOKEN: !!process.env.SHOPIFY_STOREFRONT_TOKEN,
-  };
-  if (!envStatus.OPENAI_API_KEY) {
+  // Env checks
+  if (!process.env.OPENAI_API_KEY) {
     return res.status(500).json({ error: 'Missing OPENAI_API_KEY' });
   }
 
-  // --- Load FAQ (optional) ---
+  // FAQ (optional)
   let faq = '';
   try {
     const p = path.join(process.cwd(), 'data', 'faq.md');
     faq = fs.readFileSync(p, 'utf8');
   } catch (_) {}
 
-  // --- Load catalog (local first, then live Shopify search fallback) ---
-  let catalog = readLocalCatalog(); // [{title, handle, body, tags, vendor, sku}, ...]
-  if (!catalog.length) {
-    try {
-      catalog = await searchShopify(prompt);
-    } catch (_) {}
-  }
+  // Catalog
+  let catalog = readLocalCatalog();
+  if (!catalog.length) catalog = await searchShopify(prompt);
 
-  // Pick the most relevant items for this prompt
   let top = [];
   if (catalog.length) {
     top = scoreMatches(prompt, catalog);
-    if (!top.length) {
-      top = catalog.slice(0, 5);
-    }
+    if (!top.length) top = catalog.slice(0, 5);
   }
 
   const catalogBlock = top.length
@@ -255,21 +198,13 @@ export default async function handler(req, res) {
 
   const faqBlock = faq ? `\n\n### Store FAQ\n${faq}\n` : '';
 
-  // --- System Instruction (no hedging when we have matches) ---
-  const hasMatches = top && top.length > 0;
-
   const system = [
     'You are The Phonograph Shop assistant.',
-    'Answer concisely.',
-    hasMatches
-      ? 'The context includes relevant Catalog matches. DO NOT say you are unsure. Recommend up to 3 items from the Catalog and present them confidently.'
-      : 'If the answer is not in the context, say you are not sure and suggest the site contact page.',
+    'Answer concisely and only based on the provided Catalog/FAQ context when possible.',
+    'If the answer is not in the context, say you are not sure and suggest the site contact page.',
     'When listing products, use exactly this format (max 3 items):',
     '- {Title} — {SKU} — {URL}',
     'Do not use markdown links; show plain URLs.',
-    (envStatus.SHOPIFY_STORE_DOMAIN && envStatus.SHOPIFY_STOREFRONT_TOKEN)
-      ? 'You may reference product titles, tags, vendor, short notes, and the product URL composed as https://thephonographshop.com/products/{handle}.'
-      : 'Note: live Shopify access may be limited; rely on the context provided.',
   ].join(' ');
 
   try {
@@ -293,7 +228,7 @@ export default async function handler(req, res) {
     });
 
     if (!resp.ok) {
-      const details = await resp.text();
+      const details = await resp.text().catch(()=>'(no body)');
       return res.status(502).json({ error: 'Upstream OpenAI error', details });
     }
 
@@ -301,7 +236,7 @@ export default async function handler(req, res) {
     const text = data.choices?.[0]?.message?.content?.trim() || '(no reply)';
     return res.status(200).json({ ok: true, text });
   } catch (err) {
-    console.error(err);
+    console.error('OpenAI call error', err);
     return res.status(500).json({ error: 'Server error' });
   }
 }
