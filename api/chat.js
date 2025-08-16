@@ -18,33 +18,35 @@ function normalizeText(s) {
 
 function scoreMatches(prompt, items, fields = ['title', 'body', 'tags']) {
   const q = normalizeText(prompt).toLowerCase();
-  const terms = Array.from(new Set(q.split(/\W+/).filter(t => t.length > 2)));
+  const terms = Array.from(new Set(q.split(/\W+/).filter((t) => t.length > 2)));
   if (!terms.length) return [];
 
   return items
     .map((it) => {
-      const hay = fields.map(f => (it[f] || '')).join(' ').toLowerCase();
+      const hay = fields.map((f) => (it[f] || '')).join(' ').toLowerCase();
       let score = 0;
       for (const t of terms) if (hay.includes(t)) score++;
       return { item: it, score };
     })
-    .filter(x => x.score > 0)
+    .filter((x) => x.score > 0)
     .sort((a, b) => b.score - a.score)
     .slice(0, 10)
-    .map(x => x.item);
+    .map((x) => x.item);
 }
 
 function formatCatalogSlice(items) {
-  return items.map(it => {
-    const lines = [];
-    lines.push(`- Title: ${normalizeText(it.title)}`);
-    if (it.sku) lines.push(`  SKU: ${normalizeText(it.sku)}`);
-    if (it.handle) lines.push(`  URL: https://thephonographshop.com/products/${it.handle}`);
-    if (has(it.vendor)) lines.push(`  Brand: ${it.vendor}`);
-    if (has(it.tags)) lines.push(`  Tags: ${Array.isArray(it.tags) ? it.tags.join(', ') : it.tags}`);
-    if (has(it.body)) lines.push(`  Notes: ${normalizeText(it.body).slice(0, 300)}…`);
-    return lines.join('\n');
-  }).join('\n');
+  return items
+    .map((it) => {
+      const lines = [];
+      lines.push(`- Title: ${normalizeText(it.title)}`);
+      if (it.sku) lines.push(`  SKU: ${normalizeText(it.sku)}`);
+      if (it.handle) lines.push(`  URL: https://thephonographshop.com/products/${it.handle}`);
+      if (has(it.vendor)) lines.push(`  Brand: ${it.vendor}`);
+      if (has(it.tags)) lines.push(`  Tags: ${Array.isArray(it.tags) ? it.tags.join(', ') : it.tags}`);
+      if (has(it.body)) lines.push(`  Notes: ${normalizeText(it.body).slice(0, 300)}…`);
+      return lines.join('\n');
+    })
+    .join('\n');
 }
 
 // Try to read a committed catalog file (fast, no API)
@@ -61,7 +63,7 @@ function readLocalCatalog() {
 // Live fallback: Shopify Storefront search (no product secrets needed)
 async function searchShopify(prompt) {
   const domain = process.env.SHOPIFY_STORE_DOMAIN;
-  const token  = process.env.SHOPIFY_STOREFRONT_TOKEN;
+  const token = process.env.SHOPIFY_STOREFRONT_TOKEN;
   if (!domain || !token) return [];
 
   const queryText = normalizeText(prompt).slice(0, 100);
@@ -96,7 +98,7 @@ async function searchShopify(prompt) {
 
   const data = await resp.json();
   const edges = data?.data?.products?.edges || [];
-  return edges.map(e => {
+  return edges.map((e) => {
     const n = e.node || {};
     const sku = n.variants?.edges?.[0]?.node?.sku || '';
     return {
@@ -183,15 +185,19 @@ export default async function handler(req, res) {
 
   const faqBlock = faq ? `\n\n### Store FAQ\n${faq}\n` : '';
 
-  // --- System Instruction (tight & deterministic) ---
+  // --- System Instruction (no hedging when we have matches) ---
+  const hasMatches = top && top.length > 0;
+
   const system = [
     'You are The Phonograph Shop assistant.',
-    'Answer concisely and only based on the provided Catalog/FAQ context when possible.',
-    'If the answer is not in the context, say you are not sure and suggest the site contact page.',
+    'Answer concisely.',
+    hasMatches
+      ? 'The context includes relevant Catalog matches. DO NOT say you are unsure. Recommend up to 3 items from the Catalog and present them confidently.'
+      : 'If the answer is not in the context, say you are not sure and suggest the site contact page.',
     'When listing products, use exactly this format (max 3 items):',
     '- {Title} — {SKU} — {URL}',
     'Do not use markdown links; show plain URLs.',
-    envStatus.SHOPIFY_STORE_DOMAIN && envStatus.SHOPIFY_STOREFRONT_TOKEN
+    (envStatus.SHOPIFY_STORE_DOMAIN && envStatus.SHOPIFY_STOREFRONT_TOKEN)
       ? 'You may reference product titles, tags, vendor, short notes, and the product URL composed as https://thephonographshop.com/products/{handle}.'
       : 'Note: live Shopify access may be limited; rely on the context provided.',
   ].join(' ');
@@ -205,8 +211,8 @@ export default async function handler(req, res) {
       },
       body: JSON.stringify({
         model: 'gpt-4o-mini',
-        temperature: 0,       // deterministic
-        top_p: 1,             // deterministic
+        temperature: 0,
+        top_p: 1,
         presence_penalty: 0,
         frequency_penalty: 0,
         messages: [
