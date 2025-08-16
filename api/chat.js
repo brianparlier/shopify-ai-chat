@@ -2,6 +2,9 @@
 import fs from 'fs';
 import path from 'path';
 
+const SUPPORT_EMAIL = process.env.SUPPORT_EMAIL || 'info@thephonographshop.com';
+const CONTACT_URL = process.env.CONTACT_URL || 'https://thephonographshop.com/pages/contact';
+
 const ALLOWED_ORIGINS = new Set([
   'https://thephonographshop.myshopify.com',
   'https://thephonographshop.com',
