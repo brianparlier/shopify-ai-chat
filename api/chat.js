@@ -74,14 +74,15 @@ export default async function handler(req, res) {
   }
 
   // --- System prompt (notes Shopify env state for debugging) ---
-  const system = [
-    'You are The Phonograph Shop assistant.',
-    'Answer concisely about this store’s products, policies, and common questions.',
-    'Prefer the FAQ content below when relevant.',
-    envStatus.SHOPIFY_STORE_DOMAIN && envStatus.SHOPIFY_STOREFRONT_TOKEN
-      ? ''
-      : 'Note: Shopify environment variables are not fully configured, so do not claim live order/status access.',
-  ].join(' ');
+const system = [
+  'You are The Phonograph Shop assistant.',
+  'Answer concisely about this store’s products, policies, and common questions.',
+  'Prefer the FAQ content below when relevant.',
+  envStatus.SHOPIFY_STORE_DOMAIN && envStatus.SHOPIFY_STOREFRONT_TOKEN
+    ? ''
+    : 'Note: Shopify environment variables are not fully configured, so do not claim live order/status access.',
+  `If you’re not sure, say you’re not sure and direct the customer to ${SUPPORT_EMAIL} or ${CONTACT_URL}.`
+].join(' ');
 
   const ground = faq ? `\n\n### Store FAQ\n${faq}\n\n` : '\n\n';
 
