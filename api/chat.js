@@ -16,18 +16,20 @@ function normalizeText(s) {
   return (s || '').toString().replace(/\s+/g, ' ').trim();
 }
 
-function scoreMatches(prompt, items, fields = ['title','body','tags']) {
+function scoreMatches(prompt, items, fields = ['title', 'body', 'tags']) {
   const q = normalizeText(prompt).toLowerCase();
   const terms = Array.from(new Set(q.split(/\W+/).filter(t => t.length > 2)));
   if (!terms.length) return [];
 
-  return items.map((it) => {
-    const hay = fields.map(f => (it[f] || '')).join(' ').toLowerCase();
-    let score = 0;
-    for (const t of terms) if (hay.includes(t)) score++;
-    return { item: it, score };
-  }).filter(x => x.score > 0)
-    .sort((a,b) => b.score - a.score)
+  return items
+    .map((it) => {
+      const hay = fields.map(f => (it[f] || '')).join(' ').toLowerCase();
+      let score = 0;
+      for (const t of terms) if (hay.includes(t)) score++;
+      return { item: it, score };
+    })
+    .filter(x => x.score > 0)
+    .sort((a, b) => b.score - a.score)
     .slice(0, 10)
     .map(x => x.item);
 }
@@ -62,7 +64,7 @@ async function searchShopify(prompt) {
   const token  = process.env.SHOPIFY_STOREFRONT_TOKEN;
   if (!domain || !token) return [];
 
-  const queryText = normalizeText(prompt).slice(0, 100); // keep it short
+  const queryText = normalizeText(prompt).slice(0, 100);
   const gql = `
     query SearchProducts($q: String!) {
       products(first: 10, query: $q) {
@@ -171,7 +173,6 @@ export default async function handler(req, res) {
   if (catalog.length) {
     top = scoreMatches(prompt, catalog);
     if (!top.length) {
-      // If scoring found nothing, still include a small slice so the model sees *something*
       top = catalog.slice(0, 5);
     }
   }
@@ -182,11 +183,14 @@ export default async function handler(req, res) {
 
   const faqBlock = faq ? `\n\n### Store FAQ\n${faq}\n` : '';
 
-  // --- System Instruction ---
+  // --- System Instruction (tight & deterministic) ---
   const system = [
     'You are The Phonograph Shop assistant.',
     'Answer concisely and only based on the provided Catalog/FAQ context when possible.',
     'If the answer is not in the context, say you are not sure and suggest the site contact page.',
+    'When listing products, use exactly this format (max 3 items):',
+    '- {Title} — {SKU} — {URL}',
+    'Do not use markdown links; show plain URLs.',
     envStatus.SHOPIFY_STORE_DOMAIN && envStatus.SHOPIFY_STOREFRONT_TOKEN
       ? 'You may reference product titles, tags, vendor, short notes, and the product URL composed as https://thephonographshop.com/products/{handle}.'
       : 'Note: live Shopify access may be limited; rely on the context provided.',
@@ -201,7 +205,10 @@ export default async function handler(req, res) {
       },
       body: JSON.stringify({
         model: 'gpt-4o-mini',
-        temperature: 0.2,
+        temperature: 0,       // deterministic
+        top_p: 1,             // deterministic
+        presence_penalty: 0,
+        frequency_penalty: 0,
         messages: [
           { role: 'system', content: system + faqBlock + catalogBlock },
           { role: 'user', content: normalizeText(prompt) },
