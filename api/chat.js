@@ -61,10 +61,80 @@ function readLocalCatalog() {
 }
 
 // Live fallback: Shopify Storefront search (no product secrets needed)
+// Live fallback: Shopify Storefront search (no product secrets needed)
 async function searchShopify(prompt) {
   const domain = process.env.SHOPIFY_STORE_DOMAIN;
-  const token = process.env.SHOPIFY_STOREFRONT_TOKEN;
+  const token  = process.env.SHOPIFY_STOREFRONT_TOKEN;
   if (!domain || !token) return [];
+
+  // 1) Normalize user text → compact keyword query
+  const raw = normalizeText(prompt).toLowerCase();
+  const terms = Array.from(new Set(raw.split(/\W+/).filter(t => t.length > 2)));
+
+  // prefer concise product-ish query (works MUCH better with Shopify search)
+  // e.g. "edison standard main spring"
+  const compact = terms.join(' ').slice(0, 100);
+
+  // also try a slightly biased variant that repeats “mainspring” if relevant
+  const biased = compact.includes('spring')
+    ? compact.replace(/\b(main\s*spring|spring)\b/gi, 'mainspring')
+    : compact;
+
+  const gql = `
+    query SearchProducts($q: String!) {
+      products(first: 10, query: $q) {
+        edges {
+          node {
+            id
+            title
+            handle
+            vendor
+            tags
+            variants(first: 1) { edges { node { sku } } }
+            description
+          }
+        }
+      }
+    }
+  `;
+
+  async function run(q) {
+    const resp = await fetch(`https://${domain}/api/2024-07/graphql.json`, {
+      method: 'POST',
+      headers: {
+        'X-Shopify-Storefront-Access-Token': token,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ query: gql, variables: { q } }),
+    });
+    if (!resp.ok) return [];
+    const data = await resp.json();
+    const edges = data?.data?.products?.edges || [];
+    return edges.map(e => {
+      const n = e.node || {};
+      const sku = n.variants?.edges?.[0]?.node?.sku || '';
+      return {
+        title: n.title,
+        handle: n.handle,
+        vendor: n.vendor,
+        tags: n.tags,
+        body: n.description,
+        sku,
+      };
+    });
+  }
+
+  // Try compact first, then biased; merge uniques
+  const a = await run(compact);
+  const b = biased !== compact ? await run(biased) : [];
+  const seen = new Set();
+  const merged = [];
+  for (const it of [...a, ...b]) {
+    const key = `${it.handle}|${it.sku}|${it.title}`;
+    if (!seen.has(key)) { seen.add(key); merged.push(it); }
+  }
+  return merged;
+}
 
   const queryText = normalizeText(prompt).slice(0, 100);
   const gql = `
