@@ -2,129 +2,17 @@
 import fs from 'fs';
 import path from 'path';
 
-// ---- CORS ----
+// ---------- CORS ----------
 const ALLOWED_ORIGINS = new Set([
   'https://thephonographshop.myshopify.com',
   'https://thephonographshop.com',
   'https://www.thephonographshop.com',
 ]);
 
-// ---- Helpers ----
 const has = (v) => typeof v === 'string' && v.trim().length > 0;
+const normalizeText = (s) => (s || '').toString().replace(/\s+/g, ' ').trim();
 
-function normalizeText(s) {
-  return (s || '').toString().replace(/\s+/g, ' ').trim();
-}
-
-// Common filler words we don't want to influence matching
-const STOPWORDS = new Set([
-  'i','me','my','we','us','our',
-  'need','looking','find','want','show','tell','buy','get','have','has','is','are','am',
-  'an','a','the','and','or','for','of','to','on','in','with','please','thanks','thank',
-  'do','you','your','can','could','would'
-]);
-
-function tokenize(text) {
-  return normalizeText(text)
-    .toLowerCase()
-    .split(/\W+/)
-    .filter(t => t.length > 2 && !STOPWORDS.has(t));
-}
-
-function scoreMatches(prompt, items, fields = ['title', 'body', 'tags']) {
-  const terms = Array.from(new Set(tokenize(prompt)));
-  if (!terms.length) return [];
-
-  return items
-    .map((it) => {
-      const hay = fields.map(f => (it[f] || '')).join(' ').toLowerCase();
-      let score = 0;
-      for (const t of terms) if (hay.includes(t)) score++;
-      return { item: it, score };
-    })
-    .filter(x => x.score > 0)
-    .sort((a, b) => b.score - a.score)
-    .slice(0, 10)
-    .map(x => x.item);
-}
-
-function formatCatalogSlice(items) {
-  return items.map(it => {
-    const lines = [];
-    lines.push(`- Title: ${normalizeText(it.title)}`);
-    if (it.sku) lines.push(`  SKU: ${normalizeText(it.sku)}`);
-    if (it.handle) lines.push(`  URL: https://thephonographshop.com/products/${it.handle}`);
-    if (has(it.vendor)) lines.push(`  Brand: ${it.vendor}`);
-    if (has(it.tags)) lines.push(`  Tags: ${Array.isArray(it.tags) ? it.tags.join(', ') : it.tags}`);
-    if (has(it.body)) lines.push(`  Notes: ${normalizeText(it.body).slice(0, 300)}…`);
-    return lines.join('\n');
-  }).join('\n');
-}
-
-// Try to read a committed catalog file (fast, no API)
-function readLocalCatalog() {
-  try {
-    const p = path.join(process.cwd(), 'data', 'catalog.json');
-    const raw = fs.readFileSync(p, 'utf8');
-    const arr = JSON.parse(raw);
-    if (Array.isArray(arr)) return arr;
-  } catch (_) {}
-  return [];
-}
-
-// Live fallback: Shopify Storefront search (no product secrets needed)
-async function searchShopify(prompt) {
-  const domain = process.env.SHOPIFY_STORE_DOMAIN;
-  const token  = process.env.SHOPIFY_STOREFRONT_TOKEN;
-  if (!domain || !token) return [];
-
-  const queryText = normalizeText(prompt).slice(0, 100);
-  const gql = `
-    query SearchProducts($q: String!) {
-      products(first: 10, query: $q) {
-        edges {
-          node {
-            id
-            title
-            handle
-            vendor
-            tags
-            variants(first: 1) { edges { node { sku } } }
-            description
-          }
-        }
-      }
-    }
-  `;
-
-  const resp = await fetch(`https://${domain}/api/2024-07/graphql.json`, {
-    method: 'POST',
-    headers: {
-      'X-Shopify-Storefront-Access-Token': token,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({ query: gql, variables: { q: queryText } }),
-  });
-
-  if (!resp.ok) return [];
-
-  const data = await resp.json();
-  const edges = data?.data?.products?.edges || [];
-  return edges.map(e => {
-    const n = e.node || {};
-    const sku = n.variants?.edges?.[0]?.node?.sku || '';
-    return {
-      title: n.title,
-      handle: n.handle,
-      vendor: n.vendor,
-      tags: n.tags,
-      body: n.description,
-      sku,
-    };
-  });
-}
-
-// --- CSV helpers -------------------------------------------------------------
+// ---------- CSV helpers ----------
 function splitCSVRow(row) {
   // split by commas not inside quotes
   return row.match(/(?:"[^"]*"|[^,])+/g)?.map(s => {
@@ -135,6 +23,9 @@ function splitCSVRow(row) {
 }
 
 function parseCSV(text) {
+  // strip BOM if present
+  if (text.charCodeAt(0) === 0xFEFF) text = text.slice(1);
+
   const lines = text.split(/\r?\n/).filter(l => l.trim().length);
   if (lines.length < 2) return [];
   const headers = splitCSVRow(lines[0]).map(h => h.trim().toLowerCase());
@@ -145,8 +36,10 @@ function parseCSV(text) {
     if (!cols.length) continue;
     const raw = {};
     headers.forEach((h, idx) => raw[h] = cols[idx] ?? '');
-    // normalize common Shopify export field names → our schema
-    const get = (...keys) => keys.map(k => raw[k.toLowerCase()]).find(v => v && String(v).trim().length) || '';
+
+    // common Shopify export aliases
+    const get = (...keys) =>
+      keys.map(k => raw[k.toLowerCase()]).find(v => v && String(v).trim().length) || '';
 
     const title  = get('title', 'product title', 'name');
     const handle = get('handle');
@@ -168,8 +61,9 @@ function parseCSV(text) {
   return rows;
 }
 
-// Try local JSON first; else fall back to CSV (data/products.csv)
+// ---------- Local catalog loaders ----------
 function readLocalCatalog() {
+  // Try JSON first
   try {
     const p = path.join(process.cwd(), 'data', 'catalog.json');
     const raw = fs.readFileSync(p, 'utf8');
@@ -177,6 +71,7 @@ function readLocalCatalog() {
     if (Array.isArray(arr) && arr.length) return arr;
   } catch (_) {}
 
+  // Then CSV (your case)
   try {
     const p = path.join(process.cwd(), 'data', 'products.csv');
     const raw = fs.readFileSync(p, 'utf8');
@@ -187,26 +82,55 @@ function readLocalCatalog() {
   return [];
 }
 
+// ---------- Lightweight relevance scoring ----------
+function scoreMatches(prompt, items, fields = ['title','body','tags']) {
+  const q = normalizeText(prompt).toLowerCase();
+  const terms = Array.from(new Set(q.split(/\W+/).filter(t => t.length > 2)));
+  if (!terms.length) return [];
 
+  return items.map(it => {
+    const hay = fields.map(f => (Array.isArray(it[f]) ? it[f].join(' ') : (it[f] || ''))).join(' ').toLowerCase();
+    let score = 0;
+    for (const t of terms) if (hay.includes(t)) score++;
+    return { item: it, score };
+  })
+  .filter(x => x.score > 0)
+  .sort((a,b) => b.score - a.score)
+  .slice(0, 3)                      // cap to keep prompts small & reliable
+  .map(x => x.item);
+}
+
+function formatCatalogSlice(items) {
+  return items.map(it => {
+    const lines = [];
+    lines.push(`- Title: ${normalizeText(it.title)}`);
+    if (it.sku)    lines.push(`  SKU: ${normalizeText(it.sku)}`);
+    if (it.handle) lines.push(`  URL: https://thephonographshop.com/products/${it.handle}`);
+    if (has(it.vendor)) lines.push(`  Brand: ${it.vendor}`);
+    if (has(it.tags))   lines.push(`  Tags: ${Array.isArray(it.tags) ? it.tags.join(', ') : it.tags}`);
+    if (has(it.body))   lines.push(`  Notes: ${normalizeText(it.body).slice(0, 300)}…`);
+    return lines.join('\n');
+  }).join('\n');
+}
+
+// ---------- Handler ----------
 export default async function handler(req, res) {
-  // --- CORS preflight ---
+  // Preflight
   if (req.method === 'OPTIONS') {
     const origin = req.headers.origin || '';
-    if (ALLOWED_ORIGINS.has(origin)) {
-      res.setHeader('Access-Control-Allow-Origin', origin);
-    }
+    if (ALLOWED_ORIGINS.has(origin)) res.setHeader('Access-Control-Allow-Origin', origin);
     res.setHeader('Vary', 'Origin');
     res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
     return res.status(200).end();
   }
 
-  // --- Health ---
+  // Health
   if (req.method !== 'POST') {
     return res.status(200).json({ ok: true, path: '/api/chat' });
   }
 
-  // --- CORS runtime ---
+  // CORS check
   const origin = req.headers.origin || '';
   if (!ALLOWED_ORIGINS.has(origin)) {
     return res.status(403).json({ error: 'Forbidden origin' });
@@ -215,57 +139,42 @@ export default async function handler(req, res) {
   res.setHeader('Vary', 'Origin');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 
-  // --- Input ---
+  // Input
   const { prompt } = req.body || {};
   if (!has(prompt)) {
     return res.status(400).json({ error: 'Missing prompt' });
   }
 
-  // --- Env checks ---
+  // Env
   const envStatus = {
     OPENAI_API_KEY: !!process.env.OPENAI_API_KEY,
     SHOPIFY_STORE_DOMAIN: !!process.env.SHOPIFY_STORE_DOMAIN,
     SHOPIFY_STOREFRONT_TOKEN: !!process.env.SHOPIFY_STOREFRONT_TOKEN,
   };
   if (!envStatus.OPENAI_API_KEY) {
-    return res.status(500).json({ error: 'Missing OPENAI_API_KEY' });
+    return res.status(500).json({ error: 'Missing OPENAI_API_KEY', debug: envStatus });
   }
 
-  // --- Load FAQ (optional) ---
+  // FAQ (optional)
   let faq = '';
   try {
     const p = path.join(process.cwd(), 'data', 'faq.md');
     faq = fs.readFileSync(p, 'utf8');
   } catch (_) {}
 
-  // --- Load catalog (local first, then live Shopify search fallback) ---
-  let catalog = readLocalCatalog(); // [{title, handle, body, tags, vendor, sku}, ...]
-  if (!catalog.length) {
-    try {
-      catalog = await searchShopify(prompt);
-    } catch (_) {}
-  }
-
-  // Pick the most relevant items for this prompt
-  let top = [];
-  if (catalog.length) {
-    top = scoreMatches(prompt, catalog);
-    if (!top.length) {
-      // still provide a small slice so model sees something
-      top = catalog.slice(0, 5);
-    }
-  }
+  // Catalog (CSV/JSON)
+  let catalog = [];
+  try { catalog = readLocalCatalog(); } catch (e) {}
+  const top = catalog.length ? scoreMatches(prompt, catalog) : [];
 
   const catalogBlock = top.length
     ? `\n\n### Catalog (top matches)\n${formatCatalogSlice(top)}\n`
     : '';
-
   const faqBlock = faq ? `\n\n### Store FAQ\n${faq}\n` : '';
 
-  // --- System Instruction (tight & deterministic) ---
   const system = [
     'You are The Phonograph Shop assistant.',
-    'Answer concisely and only based on the provided Catalog/FAQ context when possible.',
+    'Answer concisely and base answers on the provided Catalog/FAQ context when possible.',
     'If the answer is not in the context, say you are not sure and suggest the site contact page.',
     'When listing products, use exactly this format (max 3 items):',
     '- {Title} — {SKU} — {URL}',
@@ -284,7 +193,7 @@ export default async function handler(req, res) {
       },
       body: JSON.stringify({
         model: 'gpt-4o-mini',
-        temperature: 0, // deterministic
+        temperature: 0,
         top_p: 1,
         presence_penalty: 0,
         frequency_penalty: 0,
@@ -297,14 +206,14 @@ export default async function handler(req, res) {
 
     if (!resp.ok) {
       const details = await resp.text();
-      return res.status(502).json({ error: 'Upstream OpenAI error', details });
+      return res.status(502).json({ error: 'Upstream OpenAI error', details, debug: { envStatus, hadCatalog: !!catalog.length, topItems: top.length } });
     }
 
     const data = await resp.json();
     const text = data.choices?.[0]?.message?.content?.trim() || '(no reply)';
-    return res.status(200).json({ ok: true, text });
+    return res.status(200).json({ ok: true, text, debug: { envStatus, hadCatalog: !!catalog.length, topItems: top.length } });
   } catch (err) {
-    console.error(err);
-    return res.status(500).json({ error: 'Server error' });
+    console.error('Server error:', err);
+    return res.status(500).json({ error: 'Server error', message: String(err), debug: { envStatus } });
   }
 }
