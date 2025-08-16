@@ -2,25 +2,40 @@
 import fs from 'fs';
 import path from 'path';
 
+const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS ||
+  'https://thephonographshop.com, https://thephonographshop.myshopify.com'
+)
+  .split(',')
+  .map(s => s.trim())
+  .filter(Boolean);
+
+function setCors(res, origin) {
+  if (ALLOWED_ORIGINS.includes(origin)) {
+    res.setHeader('Access-Control-Allow-Origin', origin);
+    res.setHeader('Vary', 'Origin'); // avoid cache mixing
+  }
+  res.setHeader('Access-Control-Allow-Methods', 'POST,OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+}
+
 export default async function handler(req, res) {
+  const origin = req.headers.origin || '';
+  setCors(res, origin);
+
+  // Preflight
   if (req.method === 'OPTIONS') {
-    res.setHeader('Access-Control-Allow-Origin', 'https://thephonographshop.myshopify.com');
-    res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
-    return res.status(200).end();
+    return res.status(204).end();
   }
 
+  // Simple health check for non-POST (kept from your original)
   if (req.method !== 'POST') {
     return res.status(200).json({ ok: true, path: '/api/chat' });
   }
 
-  const origin = req.headers.origin || '';
-  if (origin !== 'https://thephonographshop.myshopify.com') {
-    return res.status(403).json({ error: 'Forbidden origin' });
+  // Enforce allowed origins on actual requests
+  if (!ALLOWED_ORIGINS.includes(origin)) {
+    return res.status(403).json({ error: 'Origin not allowed' });
   }
-
-  res.setHeader('Access-Control-Allow-Origin', origin);
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 
   const { prompt } = req.body || {};
   if (!prompt || typeof prompt !== 'string') {
@@ -31,7 +46,7 @@ export default async function handler(req, res) {
     return res.status(500).json({ error: 'Missing OPENAI_API_KEY' });
   }
 
-  // Load FAQ text (optional but recommended)
+  // Load FAQ text (optional)
   let faq = '';
   try {
     const faqPath = path.join(process.cwd(), 'data', 'faq.md');
@@ -40,7 +55,6 @@ export default async function handler(req, res) {
     // no faq file is fine
   }
 
-  // Build a grounded instruction for the assistant
   const system = [
     'You are The Phonograph Shop assistant.',
     'Answer concisely, friendly, and only about store policies and products.',
@@ -50,7 +64,6 @@ export default async function handler(req, res) {
   const ground = faq ? `\n\n### Store FAQ\n${faq}\n\n` : '\n\n';
 
   try {
-    // Using OpenAI Chat Completions (compatible with your existing setup)
     const resp = await fetch('https://api.openai.com/v1/chat/completions', {
       method: 'POST',
       headers: {
@@ -58,7 +71,7 @@ export default async function handler(req, res) {
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        model: 'gpt-4o-mini', // fast + inexpensive
+        model: 'gpt-4o-mini',
         messages: [
           { role: 'system', content: system + ground },
           { role: 'user', content: prompt }
