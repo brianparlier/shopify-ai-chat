@@ -12,7 +12,6 @@ const ALLOWED_ORIGINS = new Set([
 // Completely block email output
 const BLOCK_EMAIL = true;
 
-
 export default async function handler(req, res) {
   // --- CORS (preflight) ---
   if (req.method === 'OPTIONS') {
@@ -58,7 +57,6 @@ export default async function handler(req, res) {
     OPENAI_API_KEY: envStatus.OPENAI_API_KEY ? 'SET' : 'MISSING',
     SHOPIFY_STORE_DOMAIN: envStatus.SHOPIFY_STORE_DOMAIN ? 'SET' : 'MISSING',
     SHOPIFY_STOREFRONT_TOKEN: envStatus.SHOPIFY_STOREFRONT_TOKEN ? 'SET' : 'MISSING',
-    // (Optional) actual domain value for sanity:
     domain_value: process.env.SHOPIFY_STORE_DOMAIN || '(empty)',
   });
 
@@ -76,16 +74,16 @@ export default async function handler(req, res) {
   }
 
   // --- System prompt (notes Shopify env state for debugging) ---
-const system = [
-  'You are The Phonograph Shop assistant.',
-  'Answer concisely about this store’s products, policies, and common questions.',
-  'Prefer the FAQ content below when relevant.',
-  envStatus.SHOPIFY_STORE_DOMAIN && envStatus.SHOPIFY_STOREFRONT_TOKEN
-    ? ''
-    : 'Note: Shopify environment variables are not fully configured, so do not claim live order/status access.',
-  'Do NOT give any email addresses. Never mention “support@” or similar.',
-  'If someone asks for contact, politely say: “Please use the contact page on our website.”'
-].join(' ');
+  const system = [
+    'You are The Phonograph Shop assistant.',
+    'Answer concisely about this store’s products, policies, and common questions.',
+    'Prefer the FAQ content below when relevant.',
+    envStatus.SHOPIFY_STORE_DOMAIN && envStatus.SHOPIFY_STOREFRONT_TOKEN
+      ? ''
+      : 'Note: Shopify environment variables are not fully configured, so do not claim live order/status access.',
+    'Do NOT give any email addresses. Never mention “support@” or any email.',
+    'If someone asks for contact, say: “Please use the contact page on our website.”'
+  ].join(' ');
 
   const ground = faq ? `\n\n### Store FAQ\n${faq}\n\n` : '\n\n';
 
@@ -113,30 +111,15 @@ const system = [
     }
 
     const data = await resp.json();
-    const text = data.choices?.[0]?.message?.content?.trim() || '(no reply)';
-
-    const data = await resp.json();
-let text = data.choices?.[0]?.message?.content?.trim() || '(no reply)';
+    let text = data.choices?.[0]?.message?.content?.trim() || '(no reply)';
 
     if (BLOCK_EMAIL) {
-  // Remove any email-like strings
-  text = text.replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, 'our contact page');
-  // Reword phrases like "email us" → "contact us"
-  text = text.replace(/\bemail(ed|ing)?\b/gi, 'contacted');
-}
-    
-// Sanitize: replace any non-allowed emails with SUPPORT_EMAIL, and remove name drops
-const allowedEmails = new Set([SUPPORT_EMAIL.toLowerCase()]);
-text = text
-  .replace(
-    /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi,
-    (found) => (allowedEmails.has(found.toLowerCase()) ? found : SUPPORT_EMAIL)
-  )
-  .replace(/\b(Julie|Brian|Support Team|Customer Service)\b/gi, 'our support team');
+      // Strip any email-like strings
+      text = text.replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, 'our contact page');
+      // Neutralize "email us" phrasing
+      text = text.replace(/\bemail(ed|ing)?\b/gi, 'contact');
+    }
 
-return res.status(200).json({ ok: true, text, debug: envStatus });
-
-    
     return res.status(200).json({ ok: true, text, debug: envStatus });
   } catch (err) {
     console.error(err);
