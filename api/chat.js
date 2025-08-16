@@ -1,240 +1,174 @@
-// api/chat.js
-import fs from 'fs';
-import path from 'path';
+{%- comment -%}
+AI Chat launcher + modal dialog (self-contained)
+- Launcher uses your CDN image (transparent)
+- Sends prompts to your Vercel endpoint
+- Formats product lists in replies
+- Include with: {% render 'ai-chat' %}
+{%- endcomment -%}
 
-// ---------- CORS ----------
-const ALLOWED_ORIGINS = new Set([
-  'https://thephonographshop.myshopify.com',
-  'https://thephonographshop.com',
-  'https://www.thephonographshop.com',
-]);
+{%- assign dotty_url = 'https://cdn.shopify.com/s/files/1/0554/0236/4972/files/chat-bubble-dotty.png?v=1755357752' -%}
 
-const has = (v) => typeof v === 'string' && v.trim().length > 0;
-const normalizeText = (s) => (s || '').toString().replace(/\s+/g, ' ').trim();
+<button id="tps-chat-launcher" class="tps-chat-launcher" aria-label="Open chat">
+  <img src="{{ dotty_url }}" alt="Chat" width="64" height="64" />
+  <span class="visually-hidden">Chat</span>
+</button>
 
-// ---------- CSV helpers ----------
-function splitCSVRow(row) {
-  // split by commas not inside quotes
-  return row.match(/(?:"[^"]*"|[^,])+/g)?.map(s => {
-    s = s.trim();
-    if (s.startsWith('"') && s.endsWith('"')) s = s.slice(1, -1).replace(/""/g, '"');
-    return s;
-  }) || [];
-}
+<dialog id="tps-chat-dialog" class="tps-chat-dialog" aria-label="Chat dialog">
+  <div class="tps-chat-card">
+    <header class="tps-chat-header">
+      <h3 class="tps-chat-title">Chat</h3>
+      <button class="tps-chat-close" type="button" data-tps-chat-close aria-label="Close">×</button>
+    </header>
 
-function parseCSV(text) {
-  // strip BOM if present
-  if (text && text.charCodeAt(0) === 0xFEFF) text = text.slice(1);
+    <div id="tps-chat-messages" class="tps-chat-messages" role="log" aria-live="polite" aria-relevant="additions"></div>
 
-  const lines = (text || '').split(/\r?\n/).filter(l => l.trim().length);
-  if (lines.length < 2) return [];
-  const headers = splitCSVRow(lines[0]).map(h => h.trim().toLowerCase());
+    <form id="tps-chat-form" class="tps-chat-form" autocomplete="off">
+      <input id="tps-chat-input" class="tps-chat-input" type="text" placeholder="Ask a question…" required />
+      <button class="tps-chat-send" type="submit">Send</button>
+    </form>
+  </div>
+</dialog>
 
-  const rows = [];
-  for (let i = 1; i < lines.length; i++) {
-    const cols = splitCSVRow(lines[i]);
-    if (!cols.length) continue;
-    const raw = {};
-    headers.forEach((h, idx) => raw[h] = cols[idx] ?? '');
+<style>
+  .visually-hidden{position:absolute!important;width:1px;height:1px;margin:-1px;padding:0;border:0;clip:rect(0 0 0 0);overflow:hidden;white-space:nowrap;}
 
-    // common Shopify export aliases
-    const get = (...keys) =>
-      keys.map(k => raw[k.toLowerCase()]).find(v => v && String(v).trim().length) || '';
-
-    const title  = get('title', 'product title', 'name');
-    const handle = get('handle');
-    const vendor = get('vendor', 'brand');
-    const tagsStr= get('tags', 'tag');
-    const body   = get('body', 'body_html', 'description', 'product description');
-    const sku    = get('sku', 'variant sku', 'variantsku');
-
-    if (!title) continue;
-    rows.push({
-      title,
-      handle,
-      vendor,
-      tags: tagsStr ? tagsStr.split(/\s*,\s*/).filter(Boolean) : [],
-      body,
-      sku
-    });
+  /* Launcher (image only, no black background) */
+  #tps-chat-launcher{
+    position:fixed;right:18px;bottom:18px;width:64px;height:64px;border:0;border-radius:50%;
+    cursor:pointer;z-index:9999;background:transparent;padding:0;display:inline-flex;align-items:center;justify-content:center;
+    box-shadow:0 10px 24px rgba(0,0,0,.18);transition:transform .12s ease, box-shadow .12s ease;
   }
-  return rows;
-}
+  #tps-chat-launcher img{display:block;width:64px;height:64px}
+  #tps-chat-launcher:hover{transform:translateY(-1px)}
+  #tps-chat-launcher:active{transform:translateY(0);box-shadow:0 6px 16px rgba(0,0,0,.18)}
 
-// ---------- Local catalog loaders ----------
-function readLocalCatalog() {
-  // Try JSON first
-  try {
-    const p = path.join(process.cwd(), 'data', 'catalog.json');
-    const raw = fs.readFileSync(p, 'utf8');
-    const arr = JSON.parse(raw);
-    if (Array.isArray(arr) && arr.length) return arr;
-  } catch (_) {}
+  /* Dialog */
+  .tps-chat-dialog::backdrop{background:rgba(0,0,0,.35)}
+  .tps-chat-card{width:min(680px, calc(100vw - 32px));max-height:min(80vh, 680px);
+    background:#fff;border-radius:12px;overflow:hidden;display:flex;flex-direction:column;
+    box-shadow:0 24px 56px rgba(0,0,0,.35)}
+  .tps-chat-header{display:flex;align-items:center;justify-content:space-between;
+    padding:14px 16px;border-bottom:1px solid rgba(0,0,0,.08)}
+  .tps-chat-title{margin:0;font-size:1.6rem}
+  .tps-chat-close{background:transparent;border:0;font-size:1.8rem;cursor:pointer;line-height:1}
 
-  // Then CSV (your case)
-  try {
-    const p = path.join(process.cwd(), 'data', 'products.csv');
-    const raw = fs.readFileSync(p, 'utf8');
-    const arr = parseCSV(raw);
-    if (Array.isArray(arr) && arr.length) return arr;
-  } catch (_) {}
+  .tps-chat-messages{padding:14px 16px;overflow:auto;gap:10px;display:flex;flex-direction:column;min-height:180px}
+  .tps-msg{max-width:85%;padding:10px 12px;border-radius:12px;line-height:1.5;font-size:1.4rem}
+  .tps-msg.user{align-self:flex-end;background:#1f2937;color:#fff;border-bottom-right-radius:4px}
+  .tps-msg.bot{align-self:flex-start;background:#f3f4f6;border-bottom-left-radius:4px}
 
-  return [];
-}
+  .tps-chat-form{display:flex;gap:8px;padding:12px 12px;border-top:1px solid rgba(0,0,0,.08)}
+  .tps-chat-input{flex:1;border:1px solid rgba(0,0,0,.18);border-radius:10px;padding:10px 12px;font-size:1.4rem}
+  .tps-chat-send{border:0;border-radius:10px;padding:10px 14px;background:#111;color:#fff;cursor:pointer}
 
-// ---------- Lightweight relevance scoring (title > tags > body) ----------
-function scoreMatches(prompt, items) {
-  const q = normalizeText(prompt).toLowerCase();
-  const terms = Array.from(new Set(q.split(/\W+/).filter(t => t.length > 2)));
-  if (!terms.length) return [];
+  /* Text & product list formatting */
+  .tps-text { white-space:pre-wrap; word-break:break-word; }
+  .tps-list { list-style:disc; padding-left:1.6rem; margin:.5rem 0 0; }
+  .tps-list li { margin:.25rem 0; }
+  .tps-list a { text-decoration:underline; }
+</style>
 
-  return items.map(it => {
-    const title = (it.title || '').toLowerCase();
-    const tags  = Array.isArray(it.tags) ? it.tags.join(' ').toLowerCase() : (it.tags || '').toLowerCase();
-    const body  = (it.body || '').toLowerCase();
+<script>
+(function(){
+  const API_BASE = 'https://shopify-ai-chat-liard.vercel.app/api/chat';
 
-    let score = 0;
-    for (const t of terms) {
-      if (title.includes(t)) score += 5;   // strong weight
-      if (tags.includes(t))  score += 3;   // medium
-      if (body.includes(t))  score += 1;   // light
+  const btn   = document.getElementById('tps-chat-launcher');
+  const dlg   = document.getElementById('tps-chat-dialog');
+  const close = dlg.querySelector('[data-tps-chat-close]');
+  const form  = document.getElementById('tps-chat-form');
+  const input = document.getElementById('tps-chat-input');
+  const log   = document.getElementById('tps-chat-messages');
+  if(!btn || !dlg || !form || !input || !log) return;
+
+  const openChat  = () => { if(typeof dlg.showModal==='function'){ dlg.showModal(); input.focus(); } };
+  const closeChat = () => { if(dlg.open) dlg.close(); };
+
+  btn.addEventListener('click', openChat);
+  close.addEventListener('click', closeChat);
+
+  // ------- Formatting helpers (product lists & links) -------
+  const esc = (s) => String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+  const autoLink = (s) => s.replace(/https?:\/\/[^\s)]+/g, (m) => `<a href="${m}" target="_blank" rel="noopener">${m}</a>`);
+
+  function formatProductList(text) {
+    const lines = text.split(/\r?\n/);
+    const firstListIdx = lines.findIndex(l => l.trim().startsWith('- '));
+    const items = lines
+      .map(l => l.trim())
+      .filter(l => l.startsWith('- '))
+      .map(l => l.replace(/^- /,'').trim());
+
+    if (!items.length) {
+      return `<div class="tps-text">${autoLink(esc(text))}</div>`;
     }
-    return { item: it, score };
-  })
-  .filter(x => x.score > 0)
-  .sort((a,b) => b.score - a.score)
-  .slice(0, 3) // cap to keep prompts small & reliable
-  .map(x => x.item);
-}
 
-function formatCatalogSlice(items) {
-  return items.map(it => {
-    const lines = [];
-    lines.push(`- Title: ${normalizeText(it.title)}`);
-    if (it.sku)    lines.push(`  SKU: ${normalizeText(it.sku)}`);
-    if (it.handle) lines.push(`  URL: https://thephonographshop.com/products/${it.handle}`);
-    if (has(it.vendor)) lines.push(`  Brand: ${it.vendor}`);
-    if (has(it.tags))   lines.push(`  Tags: ${Array.isArray(it.tags) ? it.tags.join(', ') : it.tags}`);
-    if (has(it.body))   lines.push(`  Notes: ${normalizeText(it.body).slice(0, 300)}…`);
-    return lines.join('\n');
-  }).join('\n');
-}
+    const intro = firstListIdx > 0 ? lines.slice(0, firstListIdx).join('\n').trim() : '';
+    const li = items.map(row => {
+      const parts = row.split('—').map(s => s.trim());
+      if (parts.length >= 3) {
+        const title = esc(parts[0]);
+        const sku   = esc(parts[1]);
+        const url   = parts.slice(2).join('—').trim();
+        return `<li><strong>${title}</strong> — ${sku} — ${autoLink(esc(url))}</li>`;
+      }
+      return `<li>${autoLink(esc(row))}</li>`;
+    }).join('');
 
-// ---------- Handler ----------
-export default async function handler(req, res) {
-  // Preflight
-  if (req.method === 'OPTIONS') {
-    const origin = req.headers.origin || '';
-    if (ALLOWED_ORIGINS.has(origin)) res.setHeader('Access-Control-Allow-Origin', origin);
-    res.setHeader('Vary', 'Origin');
-    res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
-    return res.status(200).end();
+    const introHtml = intro ? `<div class="tps-text">${autoLink(esc(intro))}</div>` : '';
+    return `${introHtml}<ul class="tps-list">${li}</ul>`;
   }
 
-  // Health
-  if (req.method !== 'POST') {
-    return res.status(200).json({ ok: true, path: '/api/chat' });
-  }
-
-  // CORS check
-  const origin = req.headers.origin || '';
-  if (!ALLOWED_ORIGINS.has(origin)) {
-    return res.status(403).json({ error: 'Forbidden origin' });
-  }
-  res.setHeader('Access-Control-Allow-Origin', origin);
-  res.setHeader('Vary', 'Origin');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
-
-  // Input
-  const { prompt } = req.body || {};
-  if (!has(prompt)) {
-    return res.status(400).json({ error: 'Missing prompt' });
-  }
-
-  // Env
-  const envStatus = {
-    OPENAI_API_KEY: !!process.env.OPENAI_API_KEY,
-    SHOPIFY_STORE_DOMAIN: !!process.env.SHOPIFY_STORE_DOMAIN,
-    SHOPIFY_STOREFRONT_TOKEN: !!process.env.SHOPIFY_STOREFRONT_TOKEN,
+  // ------- Rendering -------
+  const addUser = (txt)=>{
+    const div = document.createElement('div');
+    div.className = 'tps-msg user';
+    div.textContent = txt;
+    log.appendChild(div);
+    log.scrollTop = log.scrollHeight;
   };
-  if (!envStatus.OPENAI_API_KEY) {
-    return res.status(500).json({ error: 'Missing OPENAI_API_KEY', debug: envStatus });
-  }
 
-  // FAQ (optional)
-  let faq = '';
-  try {
-    const p = path.join(process.cwd(), 'data', 'faq.md');
-    faq = fs.readFileSync(p, 'utf8');
-  } catch (_) {}
+  const addBot = (html)=>{
+    const div = document.createElement('div');
+    div.className = 'tps-msg bot';
+    div.innerHTML = html;
+    log.appendChild(div);
+    log.scrollTop = log.scrollHeight;
+  };
 
-  // Catalog (CSV/JSON)
-  let catalog = [];
-  try { catalog = readLocalCatalog(); } catch (_) {}
+  // ------- Submit -------
+  form.addEventListener('submit', async (e)=>{
+    e.preventDefault();
+    const prompt = input.value.trim();
+    if(!prompt) return;
 
-  // Score & pick top items (or none)
-  const top = catalog.length ? scoreMatches(prompt, catalog) : [];
+    addUser(prompt);
+    input.value = '';
+    const typing = document.createElement('div');
+    typing.className = 'tps-msg bot';
+    typing.textContent = '…';
+    log.appendChild(typing);
+    log.scrollTop = log.scrollHeight;
 
-  // Build small, safe context
-  const catalogBlock = top.length
-    ? `\n\n### Catalog (top matches)\n${formatCatalogSlice(top)}\n`
-    : `\n\n### Catalog\n(No direct matches found in this small slice; do not assert unavailability. Offer general guidance and suggest browsing products if relevant.)\n`;
-
-  const faqBlock = faq ? `\n\n### Store FAQ\n${faq}\n` : '';
-
-  // Tighten behavior to avoid overclaiming
-  const system = [
-    'You are The Phonograph Shop assistant.',
-    'Answer concisely and base answers on the provided Catalog/FAQ context when possible.',
-    'Never claim an item is unavailable or that we do not carry it unless the context explicitly states so.',
-    'If the answer is not in the context, say you are not sure and suggest browsing or using the site contact page.',
-    'When listing products, use exactly this format (max 3 items):',
-    '- {Title} — {SKU} — {URL}',
-    'Do not use markdown links; show plain URLs.',
-    envStatus.SHOPIFY_STORE_DOMAIN && envStatus.SHOPIFY_STOREFRONT_TOKEN
-      ? 'You may reference product titles, tags, vendor, short notes, and the product URL composed as https://thephonographshop.com/products/{handle}.'
-      : 'Note: live Shopify access may be limited; rely on the context provided.',
-  ].join(' ');
-
-  try {
-    const resp = await fetch('https://api.openai.com/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        model: 'gpt-4o-mini',
-        temperature: 0,
-        top_p: 1,
-        presence_penalty: 0,
-        frequency_penalty: 0,
-        messages: [
-          { role: 'system', content: system + faqBlock + catalogBlock },
-          { role: 'user', content: normalizeText(prompt) },
-        ],
-      }),
-    });
-
-    if (!resp.ok) {
-      const details = await resp.text();
-      return res.status(502).json({
-        error: 'Upstream OpenAI error',
-        details,
-        debug: { envStatus, hadCatalog: !!catalog.length, topItems: top.length }
+    try{
+      const r = await fetch(API_BASE, {
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({ prompt })
       });
-    }
+      const data = await r.json().catch(()=>({}));
+      typing.remove();
 
-    const data = await resp.json();
-    const text = data.choices?.[0]?.message?.content?.trim() || '(no reply)';
-    return res.status(200).json({
-      ok: true,
-      text,
-      debug: { envStatus, hadCatalog: !!catalog.length, topItems: top.length }
-    });
-  } catch (err) {
-    console.error('Server error:', err);
-    return res.status(500).json({ error: 'Server error', message: String(err), debug: { envStatus } });
-  }
-}
+      if(r.ok && data && data.text){
+        addBot(formatProductList(data.text));
+      }else{
+        addBot('Sorry—something went wrong.');
+        console.warn('Chat error', data);
+      }
+    }catch(err){
+      typing.remove();
+      addBot('Sorry—something went wrong.');
+      console.error(err);
+    }
+  });
+})();
+</script>
