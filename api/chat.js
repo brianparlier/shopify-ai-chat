@@ -2,7 +2,7 @@
 AI Chat launcher + modal dialog (self-contained)
 - Launcher uses your CDN image (transparent)
 - Sends prompts to your Vercel endpoint
-- Formats product lists in replies
+- Formats product lists in replies (Title as hyperlink, no SKU/URL text)
 - Include with: {% render 'ai-chat' %}
 {%- endcomment -%}
 
@@ -92,7 +92,6 @@ AI Chat launcher + modal dialog (self-contained)
 
   function formatProductList(text) {
     const lines = text.split(/\r?\n/);
-    const firstListIdx = lines.findIndex(l => l.trim().startsWith('- '));
     const items = lines
       .map(l => l.trim())
       .filter(l => l.startsWith('- '))
@@ -102,19 +101,28 @@ AI Chat launcher + modal dialog (self-contained)
       return `<div class="tps-text">${autoLink(esc(text))}</div>`;
     }
 
-    const intro = firstListIdx > 0 ? lines.slice(0, firstListIdx).join('\n').trim() : '';
+    // Build <li><a>Title</a></li> using em-dash format or URL sniffing
     const li = items.map(row => {
+      // Preferred pattern: "Title — URL" or "Title — something — URL"
       const parts = row.split('—').map(s => s.trim());
-      if (parts.length >= 3) {
-        const title = esc(parts[0]);
-        const sku   = esc(parts[1]);
-        const url   = parts.slice(2).join('—').trim();
-        return `<li><strong>${title}</strong> — ${sku} — ${autoLink(esc(url))}</li>`;
-      }
-      return `<li>${autoLink(esc(row))}</li>`;
+      // Find URL anywhere in the row
+      const urlMatch = row.match(/https?:\/\/[^\s)]+/);
+      const url = urlMatch ? urlMatch[0] : '';
+
+      // Title: if we have em-dashes, take the first part; else use the text before the URL
+      let title = parts.length ? parts[0] : row.replace(url, '').trim();
+      if (!title && url) title = url; // fallback
+
+      return url
+        ? `<li><a href="${esc(url)}" target="_blank" rel="noopener">${esc(title)}</a></li>`
+        : `<li>${esc(title)}</li>`;
     }).join('');
 
+    // Optional intro above the list (anything before first "- ")
+    const firstListIdx = lines.findIndex(l => l.trim().startsWith('- '));
+    const intro = firstListIdx > 0 ? lines.slice(0, firstListIdx).join('\n').trim() : '';
     const introHtml = intro ? `<div class="tps-text">${autoLink(esc(intro))}</div>` : '';
+
     return `${introHtml}<ul class="tps-list">${li}</ul>`;
   }
 
@@ -135,7 +143,7 @@ AI Chat launcher + modal dialog (self-contained)
     log.scrollTop = log.scrollHeight;
   };
 
-  // ------- Submit -------
+  // ------- Submit (with error detail) -------
   form.addEventListener('submit', async (e)=>{
     e.preventDefault();
     const prompt = input.value.trim();
@@ -153,20 +161,27 @@ AI Chat launcher + modal dialog (self-contained)
       const r = await fetch(API_BASE, {
         method:'POST',
         headers:{'Content-Type':'application/json'},
-        body: JSON.stringify({ prompt })
+        body: JSON.stringify({ prompt, debug: true })
       });
-      const data = await r.json().catch(()=>({}));
+
+      let data, raw = '';
+      try { data = await r.json(); }
+      catch { raw = await r.text(); data = null; }
+
       typing.remove();
 
       if(r.ok && data && data.text){
         addBot(formatProductList(data.text));
       }else{
-        addBot('Sorry—something went wrong.');
-        console.warn('Chat error', data);
+        const msg =
+          (data && (data.error || data.details || data.message)) ? String(data.error || data.details || data.message) :
+          (raw ? raw.slice(0, 500) : 'Unknown error');
+        addBot('Sorry—something went wrong.\n\n' + msg);
+        console.warn('Chat error', { status:r.status, data, raw });
       }
     }catch(err){
       typing.remove();
-      addBot('Sorry—something went wrong.');
+      addBot('Sorry—something went wrong.\n\n' + String(err));
       console.error(err);
     }
   });
